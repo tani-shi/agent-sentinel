@@ -46,6 +46,24 @@ command_regex = '''gcloud\s+auth\s+print-(access|identity)-token(\s|$)'''
 name = "gcloud-service-account-keys"
 command_regex = '''gcloud\s+iam\s+service-accounts\s+keys\s+create(\s|$)'''
 
+# --- Process Signals (broadcast / pattern-match) ---
+
+[[rules]]
+name = "pkill"
+command_regex = '''^\s*pkill(\s|$)'''
+
+[[rules]]
+name = "killall"
+command_regex = '''^\s*killall(\s|$)'''
+
+[[rules]]
+name = "kill-broadcast"
+command_regex = '''^\s*kill\s+(\S+\s+)*-1(\s|$)'''
+
+[[rules]]
+name = "xargs-pkill-killall"
+command_regex = '''^\s*xargs\s+(pkill|killall)(\s|$)'''
+
 # --- Sensitive Path Deny Rules (shared by Read, Write, Edit, MultiEdit) ---
 
 # --- Environment / Config Files ---

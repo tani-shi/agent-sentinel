@@ -285,8 +285,8 @@ name = "bun-x-execute"
 command_regex = '''^\s*bun\s+x(\s|$)'''
 
 [[rules]]
-name = "pkill-killall"
-command_regex = '''^\s*(pkill|killall|kill)\s+'''
+name = "kill"
+command_regex = '''^\s*kill(\s|$)'''
 
 [[rules]]
 name = "launchctl-mutate"
@@ -298,7 +298,7 @@ command_regex = '''^\s*flashspace\s+(delete|add|set|create|update|remove)[\w-]*(
 
 [[rules]]
 name = "xargs-destructive"
-command_regex = '''^\s*xargs\s+(rm|kill|pkill|killall|chmod|chown|mv|dd)'''
+command_regex = '''^\s*xargs\s+(rm|kill|chmod|chown|mv|dd)(\s|$)'''
 
 # --- Indirect Code Execution ---
 

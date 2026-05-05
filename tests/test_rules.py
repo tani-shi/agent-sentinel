@@ -74,6 +74,46 @@ class TestDenyRules:
     def test_force_push_main_with_no_pager(self):
         assert match_deny("git --no-pager push --force origin main") is not None
 
+    # --- Process Signals (pkill / killall / kill -1 broadcast) ---
+
+    def test_pkill(self):
+        assert match_deny("pkill foo") is not None
+        assert match_deny("pkill -f bar") is not None
+        assert match_deny('pkill -f "vite" -f "5174"') is not None
+        assert match_deny("pkill") is not None
+
+    def test_pkill_no_false_positive(self):
+        assert match_deny("pkillsuffix foo") is None
+
+    def test_killall(self):
+        assert match_deny("killall vite") is not None
+        assert match_deny("killall -9 node") is not None
+        assert match_deny("killall") is not None
+
+    def test_killall_no_false_positive(self):
+        assert match_deny("killallsuffix foo") is None
+
+    def test_kill_broadcast(self):
+        assert match_deny("kill -1") is not None
+        assert match_deny("kill -9 -1") is not None
+        assert match_deny("kill -KILL -1") is not None
+        assert match_deny("kill -SIGKILL -1") is not None
+        assert match_deny("kill -s KILL -1") is not None
+        assert match_deny("kill -- -1") is not None
+        assert match_deny("kill -- -- -1") is not None
+
+    def test_kill_pid_not_broadcast(self):
+        assert match_deny("kill 12345") is None
+        assert match_deny("kill 1") is None
+        assert match_deny("kill 1 2 3") is None
+        assert match_deny("kill -- 1") is None
+        assert match_deny("kill -9 1234") is None
+        assert match_deny("kill -9 -1234") is None
+
+    def test_xargs_pkill_killall(self):
+        assert match_deny("xargs pkill -f vite") is not None
+        assert match_deny("xargs killall node") is not None
+
 
 class TestAllowRules:
     def test_ls(self):
@@ -832,6 +872,21 @@ class TestAskRules:
         assert match_ask("xargs echo") is None
         assert match_ask("xargs grep pattern") is None
 
+    # --- Process Signals (kill PID stays at ASK; pkill/killall moved to DENY) ---
+
+    def test_kill_pid_asks(self):
+        assert match_ask("kill 12345") is not None
+        assert match_ask("kill -9 1234") is not None
+        assert match_ask("kill") is not None
+
+    def test_pkill_killall_no_longer_in_ask(self):
+        assert match_ask("pkill foo") is None
+        assert match_ask("killall vite") is None
+
+    def test_xargs_pkill_killall_no_longer_ask(self):
+        assert match_ask("xargs pkill -f vite") is None
+        assert match_ask("xargs killall node") is None
+
     # --- Prefix options (preprocessing via command_normalizer) ---
 
     def test_git_c_reset_hard(self):
@@ -1187,3 +1242,29 @@ class TestEvaluateCommand:
         )
         decision, _ = evaluate_command(cmd)
         assert decision == "allow"
+
+    # --- Process Signals incident (2026-05 pkill desktop crash) ---
+
+    def test_pkill_incident_compound_command(self):
+        cmd = (
+            "kill but0xh11a 2>/dev/null; "
+            'pkill -f "vite" -f "5174" 2>/dev/null; '
+            "lsof -i :5174 2>&1 | head -3"
+        )
+        decision, reason = evaluate_command(cmd)
+        assert decision == "deny"
+        assert "pkill" in reason
+
+    def test_killall_in_compound_denied(self):
+        decision, reason = evaluate_command("ls && killall vite")
+        assert decision == "deny"
+        assert "killall" in reason
+
+    def test_kill_broadcast_in_compound_denied(self):
+        decision, reason = evaluate_command("echo cleanup; kill -9 -1")
+        assert decision == "deny"
+        assert "kill-broadcast" in reason
+
+    def test_kill_pid_in_compound_asks(self):
+        decision, _ = evaluate_command("ls && kill 12345")
+        assert decision == "ask"
