@@ -71,6 +71,7 @@ Tools with external impact (e.g. Slack send/schedule/canvas tools) require user 
 | `pipe-to-shell` | `curl \| bash`, `wget \| sh` |
 | `force-push-main` | `git push --force` to `main`/`master` (allows `--force-with-lease`) |
 | `env-write` | Writing to `.env` files via `>`, `>>`, `tee` |
+| `dynamic-linker-hijack` | Setting `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH` |
 
 ## Sensitive path deny rules (RULE_DENY)
 
@@ -143,6 +144,7 @@ Common development commands are auto-approved, including:
 - Process inspection: `ps`, `pgrep`, `lsof`
 - Utilities: `echo`, `pwd`, `which`, `date`, `sort`, `sed` (excludes `sed -i`), `awk`, `tar`, `zip`, `zipinfo`, `stat`, `env`, `printenv`
 - Variable assignments: `VAR='value'`, `VAR="value"`, `VAR=word` (static values only; `VAR=$(...)` is split and its inner command is evaluated independently)
+- `export VAR=...` (the inner `$(...)` is split out and evaluated independently)
 
 See [`src/claude_sentinel/rules/allow.toml`](src/claude_sentinel/rules/allow.toml) for the full list.
 

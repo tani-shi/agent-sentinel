@@ -16,7 +16,7 @@ command_regex = '''^\s*cat\s+'''
 
 [[rules]]
 name = "echo"
-command_regex = '''^\s*echo\s+'''
+command_regex = '''^\s*echo(\s|$)'''
 
 [[rules]]
 name = "pwd"
@@ -68,6 +68,14 @@ command_regex = '''^\s*cd(\s|$)'''
 [[rules]]
 name = "variable-assignment"
 command_regex = '''^\s*[A-Za-z_][A-Za-z0-9_]*=('[^']*'|"[^"`$]*"|[\w./:@%+-]*)\s*$'''
+
+# `export FOO=$(cmd)` style is split by the bash splitter so the inner
+# `$(...)` is evaluated independently — the export wrapper itself is a safe
+# allow target.
+
+[[rules]]
+name = "export"
+command_regex = '''^\s*export\s+'''
 
 [[rules]]
 name = "test-bracket"

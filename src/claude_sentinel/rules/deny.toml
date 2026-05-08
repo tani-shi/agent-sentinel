@@ -34,6 +34,17 @@ command_regex = '''git\s+push\s+.*--force(?!-with-lease).*\b(main|master)\b'''
 name = "env-write"
 command_regex = '''(>|>>)\s*\.env(\s|$|\.)|tee\s+.*\.env(\s|$|\.)'''
 
+# Dynamic-linker hijacking: setting LD_PRELOAD / DYLD_INSERT_LIBRARIES (and
+# their LIBRARY_PATH siblings) injects attacker code into every dynamically
+# linked binary launched in the same shell. The variable-assignment and
+# export allow rules would otherwise let `export LD_PRELOAD=/evil.so` slip
+# through. Anchored at line/segment start so the rule survives the splitter
+# leaving multi-line bodies intact.
+
+[[rules]]
+name = "dynamic-linker-hijack"
+command_regex = '''^\s*(export\s+)?(LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH)\s*='''
+
 [[rules]]
 name = "gcloud-secrets-access"
 command_regex = '''gcloud\s+secrets\s+versions\s+access(\s|$)'''

@@ -29,16 +29,23 @@ _allow_rules: RuleSet | None = None
 _ask_rules: RuleSet | None = None
 
 
-def _parse_rules(data: dict[str, Any]) -> RuleSet:
-    """Parse TOML data into a RuleSet."""
+def _parse_rules(data: dict[str, Any], *, kind: str) -> RuleSet:
+    """Parse TOML data into a RuleSet.
+
+    DENY rules are compiled with re.MULTILINE so the unparseable-command
+    pre-filter catches `^\\s*sudo\\s+` etc. inside heredoc bodies, and so
+    parsed segments containing multi-line content (e.g. ``bash -c '<body>'``)
+    still trip line-anchored deny patterns. ASK and ALLOW rules use a plain
+    anchor: a multi-line jq/awk/sed script in a single-quoted argument
+    must not be interpreted line-by-line as bash commands.
+    """
     ruleset = RuleSet()
-    # MULTILINE: lets ^/$ match line boundaries so heredoc-body deny scans
-    # in the unparseable-command pre-filter still catch `^\s*sudo\s+` etc.
+    flags = re.MULTILINE if kind == "deny" else 0
     for entry in data.get("rules", []):
         ruleset.command_rules.append(
             Rule(
                 name=entry["name"],
-                pattern=re.compile(entry["command_regex"], re.MULTILINE),
+                pattern=re.compile(entry["command_regex"], flags),
             )
         )
     for entry in data.get("sensitive_path_rules", []):
@@ -58,7 +65,7 @@ def load_rules(path: str | None = None, *, kind: str = "deny") -> RuleSet:
         filename = f"{kind}.toml"
         content = (rules_pkg / filename).read_text(encoding="utf-8")
         data = tomllib.loads(content)
-    return _parse_rules(data)
+    return _parse_rules(data, kind=kind)
 
 
 def get_deny_rules() -> RuleSet:
