@@ -354,6 +354,19 @@ class TestAllowRules:
     def test_git_version(self):
         assert match_allow("git --version") is not None
 
+    def test_git_push_with_redirect(self):
+        assert match_allow("git push 2>&1") is not None
+        assert match_allow("git push --quiet") is not None
+        assert match_allow("git push --tags") is not None
+        assert match_allow("git -C /tmp/repo push 2>&1") is not None
+
+    def test_git_push_force_still_blocks(self):
+        # The broad allow rule must not override existing ASK/DENY for force push.
+        decision, _ = evaluate_command("git push --force origin feature")
+        assert decision == "ask"
+        decision, _ = evaluate_command("git push --force origin main")
+        assert decision == "deny"
+
     def test_make_diff_validate(self):
         assert match_allow("make diff-config") is not None
         assert match_allow("make validate") is not None

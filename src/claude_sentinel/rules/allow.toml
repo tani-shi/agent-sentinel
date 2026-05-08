@@ -175,6 +175,10 @@ command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(submodule|ls-files|ls-tree|ls-remote
 name = "git-version"
 command_regex = '''^\s*git\s+--version\s*$'''
 
+[[rules]]
+name = "git-push-broad"
+command_regex = '''^\s*git\s+(-C\s+\S+\s+)?push(\s|$)'''
+
 # --- Python ---
 
 [[rules]]
