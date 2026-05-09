@@ -437,6 +437,16 @@ command_regex = '''^\s*log\s+show(\s|$)'''
 name = "fswatch"
 command_regex = '''^\s*fswatch(\s|$)'''
 
+# --- Print / Text Utilities ---
+
+[[rules]]
+name = "figlet"
+command_regex = '''^\s*figlet(\s|$)'''
+
+[[rules]]
+name = "trivial-text-utils"
+command_regex = '''^\s*(factor|cal|tac|yes|shuf|seq|rev)(\s|$)'''
+
 # --- Homebrew ---
 
 [[rules]]
@@ -478,6 +488,10 @@ command_regex = '''^\s*fam\s+(show|export)(\s|$)'''
 [[rules]]
 name = "fam-subcommand-read"
 command_regex = '''^\s*fam\s+\S+\s+(show|status|list|test)(\s|$)'''
+
+[[rules]]
+name = "fam-db-read"
+command_regex = '''^\s*fam\s+db\s+(read|tables)(\s|$)'''
 
 [[rules]]
 name = "flashspace-read"

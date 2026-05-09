@@ -498,6 +498,23 @@ class TestAllowRules:
     def test_fswatch(self):
         assert match_allow("fswatch -r .") is not None
 
+    def test_figlet(self):
+        assert match_allow("figlet hello") is not None
+        assert match_allow("figlet world") is not None
+
+    def test_trivial_text_utils(self):
+        assert match_allow("factor 42") is not None
+        assert match_allow("cal") is not None
+        assert match_allow("tac /etc/hosts") is not None
+        assert match_allow("yes hi") is not None
+        assert match_allow("shuf -i 1-5 -n 3") is not None
+        assert match_allow("seq 1 10") is not None
+        assert match_allow("rev file.txt") is not None
+
+    def test_fam_db_read(self):
+        assert match_allow('fam db read "SELECT 1"') is not None
+        assert match_allow("fam db tables") is not None
+
 
 class TestSensitivePathRules:
     # A. Environment / config files
