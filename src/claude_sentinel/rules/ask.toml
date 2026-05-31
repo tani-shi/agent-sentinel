@@ -40,7 +40,7 @@ command_regex = '''^\s*helm\s+(install|upgrade|uninstall|rollback)(\s|$)'''
 
 [[rules]]
 name = "make-deploy"
-command_regex = '''^\s*make\s+(deploy|tf[\w-]*|terraform-[\w-]*)(\s|$)'''
+command_regex = '''^\s*make\s+(?!(tf|terraform)-(validate|plan|fmt|init|output|show|state-list|state-show|workspace-list|workspace-show|workspace-select|providers|version|graph)(\s|$))((re|un|pre|post)?deploy([-_][\w-]*)?|tf[\w-]*|terraform-[\w-]*)(\s|$)'''
 
 [[rules]]
 name = "make-sync"
@@ -128,11 +128,24 @@ command_regex = '''^\s*gh\s+repo\s+(create|delete|fork|rename|archive|edit)(\s|$
 name = "gh-api-mutate"
 command_regex = '''^\s*gh\s+api\s+.*(-X|--method)\s+(POST|PUT|DELETE|PATCH)'''
 
+[[rules]]
+name = "gh-workflow-mutate"
+command_regex = '''^\s*gh\s+workflow\s+(run|disable|enable|delete)(\s|$)'''
+
 # --- Git Force Push ---
 
 [[rules]]
 name = "git-push-force"
 command_regex = '''^\s*git\s+push\s+.*--force(?!-with-lease)'''
+
+# --- Git Commit Policy ---
+# Mechanically enforce the "never auto-commit" policy by asking on every
+# git commit (including --amend). `commit` was removed from the allow rule
+# `git-local-ops` in allow.toml so this ASK takes effect.
+
+[[rules]]
+name = "git-commit"
+command_regex = '''^\s*git\s+(-C\s+\S+\s+)?commit(\s|$)'''
 
 # --- HTTP Mutations ---
 
@@ -149,6 +162,10 @@ command_regex = '''^\s*curl\s+.*(-d\s|--data\s|--data-raw\s|--data-binary\s|--da
 [[rules]]
 name = "gcloud-mutate"
 command_regex = '''^\s*gcloud\s+.*\s+(create|delete|update|set|add|remove|deploy|submit|run|import|export|enable|disable|reset|start|stop|resize|move|restore|cancel|approve|deny|revoke|bind|unbind|attach|detach|push|promote|rollback|abort|suspend|resume)(\s|$)'''
+
+[[rules]]
+name = "gcloud-pubsub-pull"
+command_regex = '''^\s*gcloud\s+pubsub\s+subscriptions\s+pull(\s|$)'''
 
 # --- AWS Mutations ---
 

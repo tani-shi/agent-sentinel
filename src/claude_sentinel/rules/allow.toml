@@ -69,9 +69,20 @@ command_regex = '''^\s*cd(\s|$)'''
 name = "variable-assignment"
 command_regex = '''^\s*[A-Za-z_][A-Za-z0-9_]*=('[^']*'|"[^"`$]*"|[\w./:@%+-]*)\s*$'''
 
-# `export FOO=$(cmd)` style is split by the bash splitter so the inner
-# `$(...)` is evaluated independently — the export wrapper itself is a safe
-# allow target.
+# `FOO=$(cmd)` assignment from command substitution. The splitter extracts
+# the inner `$(...)` as its own segment and evaluates it independently. The
+# `\)\s*$` end anchor is load-bearing: without it, `FOO=$(safe) make deploy`
+# would match (because the splitter does NOT split env-var prefixes off the
+# trailing command), silently ALLOW'ing any trailing command after a benign
+# substitution. With the anchor, the rule matches only isolated assignments
+# and trailing-command forms fall through to LLM judge.
+
+[[rules]]
+name = "var-assign-substitution"
+command_regex = '''^\s*[A-Za-z_][A-Za-z0-9_]*=\$\([\s\S]*\)\s*$'''
+
+# `export FOO=$(cmd)` — splitter recurses into `$(...)` as a nested segment
+# (see var-assign-substitution comment above); the export wrapper is safe.
 
 [[rules]]
 name = "export"
@@ -151,7 +162,7 @@ command_regex = '''^\s*jq(\s|$)'''
 name = "zsh-run"
 command_regex = '''^\s*(zsh|bash|sh)\s+'''
 
-# --- Help Flags ---
+# --- Help & Version Flags ---
 
 [[rules]]
 name = "help-flag"
@@ -161,15 +172,25 @@ command_regex = '''\s--help(\s|$)'''
 name = "help-subcommand"
 command_regex = '''^\s*\S+\s+help(\s|$)'''
 
+[[rules]]
+name = "version-flag"
+command_regex = '''\s--version(\s|$)'''
+
 # --- Git ---
 
 [[rules]]
 name = "git-status"
 command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(status|log|diff|branch|show|rev-parse|remote)(\s|$)'''
 
+# Local git write ops that don't touch the remote. `commit` is intentionally
+# excluded — the `git-commit` ask rule mechanically enforces the
+# "never auto-commit" policy. `push` lives in `git-push-safe` / `git-push-broad`.
+# Renamed from the pre-existing `git-add-commit` (which had grown to cover
+# 11 verbs while the name suggested only two).
+
 [[rules]]
-name = "git-add-commit"
-command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(add|commit|switch|stash|pull|fetch|rebase|merge|cherry-pick|reset|restore|revert)(\s|$)'''
+name = "git-local-ops"
+command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(add|switch|stash|pull|fetch|rebase|merge|cherry-pick|reset|restore|revert)(\s|$)'''
 
 [[rules]]
 name = "git-push-safe"
@@ -292,6 +313,10 @@ command_regex = '''^\s*gh\s+\S+\s+(list|view|get|status|diff|check|watch|search|
 [[rules]]
 name = "gh-pr-checks"
 command_regex = '''^\s*gh\s+pr\s+checks(\s|$)'''
+
+[[rules]]
+name = "gh-browse"
+command_regex = '''^\s*gh\s+browse(\s|$)'''
 
 # --- Google Workspace CLI (gog) ---
 
