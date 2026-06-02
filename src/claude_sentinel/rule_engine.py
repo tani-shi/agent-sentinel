@@ -528,10 +528,20 @@ def evaluate_command(
     """
     segments = extract_commands(command)
     if segments is None:
-        # Defense-in-depth deny scan over the full string before LLM fallback.
+        # Defense-in-depth scan over the full string before LLM fallback.
+        # Both DENY and ASK rules are consulted: without the ASK check, a
+        # heredoc form like `git commit -m "$(cat <<'EOF' ... EOF)"` would
+        # bypass the `git-commit` ASK rule (the splitter can't parse `<<`
+        # so segments is None) and fall straight to LLM. The ASK rules are
+        # anchored with `^\s*`, so they only match commands whose head is
+        # the expected program — heredoc bodies inside the command don't
+        # cause spurious matches.
         deny = match_deny(command)
         if deny:
             return "deny", f"Blocked by deny rule: {deny.name}"
+        ask = match_ask(command)
+        if ask:
+            return "ask", f"Matched ask rule: {ask.name}"
         return "llm", "Unparseable bash; deferring to LLM judge"
     if not segments:
         return "allow", "Empty command"

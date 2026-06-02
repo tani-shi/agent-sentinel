@@ -1369,6 +1369,30 @@ class TestEvaluateCommand:
         assert decision == "deny"
         assert "sudo" in reason
 
+    def test_unparseable_heredoc_commit_is_asked(self):
+        # The motivating case for the parse-fail ASK check: claude often
+        # creates commits via heredoc messages, which the splitter cannot
+        # parse. Without ASK in the parse-fail path, the new git-commit ASK
+        # rule was bypassed and the LLM judge would silently approve the
+        # commit. The full string starts with `git commit`, so the
+        # ^-anchored ASK regex matches.
+        decision, reason = evaluate_command("git commit -m \"$(cat <<'EOF'\nfeat: msg\nEOF\n)\"")
+        assert decision == "ask"
+        assert "git-commit" in reason
+
+    def test_unparseable_heredoc_other_ask_rules_still_apply(self):
+        # The parse-fail ASK path is general, not git-commit-specific.
+        # `gh workflow run` via heredoc also gets ASKed.
+        decision, _ = evaluate_command(
+            "gh workflow run deploy.yml --field body=\"$(cat <<'EOF'\nx\nEOF\n)\""
+        )
+        assert decision == "ask"
+
+    def test_unparseable_heredoc_with_no_ask_match_falls_to_llm(self):
+        # Heredocs without an ASK-matching head should still LLM as before.
+        decision, _ = evaluate_command("cat <<EOF\nplain text\nEOF")
+        assert decision == "llm"
+
     # --- Variable assignment ---
 
     def test_variable_assignment_single_quoted(self):
