@@ -325,6 +325,70 @@ def _skip_brace(s: str, i: int, end: int, inner_subs: list[tuple[int, int]] | No
     return j
 
 
+def _parse_heredoc_delim(s: str, i: int, end: int) -> tuple[str, bool, int]:
+    """``i`` points at the first ``<`` of ``<<``. Returns ``(delimiter,
+    tab_strip, position_past_delimiter_token)``.
+
+    Recognizes ``<<DELIM``, ``<<-DELIM`` (tab-stripping form), and quoted
+    delimiters ``<<'DELIM'`` / ``<<"DELIM"``.
+    """
+    j = i + 2  # skip ``<<``
+    tab_strip = False
+    if j < end and s[j] == "-":
+        tab_strip = True
+        j += 1
+    # Bash allows optional whitespace between `<<` and the delimiter.
+    while j < end and s[j] in " \t":
+        j += 1
+    if j >= end:
+        raise _ParseError("heredoc missing delimiter")
+
+    if s[j] in ("'", '"'):
+        quote = s[j]
+        j += 1
+        delim_start = j
+        while j < end and s[j] != quote:
+            if s[j] == "\\" and j + 1 < end:
+                j += 2
+            else:
+                j += 1
+        if j >= end:
+            raise _ParseError("unterminated heredoc delimiter quote")
+        delim = s[delim_start:j]
+        j += 1  # consume closing quote
+    else:
+        delim_start = j
+        while j < end and (s[j].isalnum() or s[j] == "_"):
+            j += 1
+        delim = s[delim_start:j]
+
+    if not delim:
+        raise _ParseError("empty heredoc delimiter")
+    return delim, tab_strip, j
+
+
+def _skip_heredoc_body(s: str, i: int, end: int, delim: str, tab_strip: bool) -> int:
+    """``i`` points at the first char of the heredoc body (just after the
+    newline that ended the command line containing ``<<DELIM``). Returns
+    the position past the closing-delimiter line's terminating newline (or
+    ``end`` if the file ends without one).
+    """
+    while i < end:
+        line_start = i
+        while i < end and s[i] != "\n":
+            i += 1
+        line = s[line_start:i]
+        if tab_strip:
+            line = line.lstrip("\t")
+        if line == delim:
+            if i < end:
+                i += 1  # consume trailing \n
+            return i
+        if i < end:
+            i += 1  # consume \n and keep scanning
+    raise _ParseError(f"heredoc {delim!r} not closed")
+
+
 def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int]]) -> None:
     """Walk ``s[start:end]`` splitting on top-level command operators and
     appending each command's ``(start, end)`` span to ``all_segments``.
@@ -332,6 +396,10 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
     commands are also collected.
     """
     inner_subs: list[tuple[int, int]] = []
+    # Heredocs declared on the current logical line: their bodies appear after
+    # the next newline. We queue (delim, tab_strip) pairs at ``<<DELIM`` and
+    # drain them when the line terminator is reached.
+    pending_heredocs: list[tuple[str, bool]] = []
     i = start
     cmd_start = _skip_ws(s, start, end)
 
@@ -376,10 +444,18 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
             inner_subs.append((inner_start, i - 1))
             continue
 
-        # --- Heredocs are not supported (the body would need a separate
-        # scan that we don't implement). Force a safe ASK fallback. ---
+        # --- Heredocs ``<<DELIM`` and here-strings ``<<<`` ---
+        # ``<<<`` (here-string) is a redirection whose right-hand side is just
+        # the next word/string token — let normal scanning consume it.
+        # ``<<DELIM`` queues a pending heredoc; the body is skipped when the
+        # current logical line terminates (``\n`` handler below).
         if c == "<" and i + 1 < end and s[i + 1] == "<":
-            raise _ParseError("heredoc not supported")
+            if i + 2 < end and s[i + 2] == "<":
+                i += 3
+                continue
+            delim, tab_strip, i = _parse_heredoc_delim(s, i, end)
+            pending_heredocs.append((delim, tab_strip))
+            continue
 
         # --- Process substitution <(...) and >(...) ---
         if c in "<>" and i + 1 < end and s[i + 1] == "(":
@@ -444,6 +520,18 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
             continue
 
         if c == "\n":
+            if pending_heredocs:
+                # Heredoc body+closing-delim belong to the same logical
+                # command as the indicator. Consume them into the current
+                # segment so rule matching (especially MULTILINE deny rules)
+                # still sees body content like `sudo rm /etc/passwd`.
+                i += 1
+                while pending_heredocs:
+                    delim, tab_strip = pending_heredocs.pop(0)
+                    i = _skip_heredoc_body(s, i, end, delim, tab_strip)
+                emit(i)
+                cmd_start = _skip_ws(s, i, end)
+                continue
             emit(i)
             i += 1
             cmd_start = _skip_ws(s, i, end)
@@ -452,6 +540,9 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
         # --- Anything else: ordinary command character ---
         i += 1
 
+    if pending_heredocs:
+        # End-of-input reached while heredocs are still awaiting their bodies.
+        raise _ParseError("unterminated heredoc at end of input")
     emit(end)
 
     # Recurse into substitution bodies — but only spans with content.

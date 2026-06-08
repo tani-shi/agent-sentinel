@@ -1216,9 +1216,51 @@ class TestExtractCommands:
         segs = extract_commands(r"echo a\&\&b")
         assert segs == [r"echo a\&\&b"]
 
-    def test_heredoc_returns_none(self):
-        # Heredocs are explicitly unsupported — caller resolves to ASK.
-        assert extract_commands("cat <<EOF\nhello\nEOF") is None
+    def test_heredoc_is_parsed(self):
+        # Heredocs are now skipped by the splitter; body+closing delim are
+        # included in the emitted segment so rule matching (DENY MULTILINE
+        # for body-injected commands, ASK for the head verb) keeps working.
+        segments = extract_commands("cat <<EOF\nhello\nEOF")
+        assert segments is not None
+        assert len(segments) == 1
+        assert "cat <<EOF" in segments[0]
+        assert "hello" in segments[0]
+
+    def test_heredoc_compound_splits_correctly(self):
+        # The user's auto-commit case: `git add . && git commit -F - <<EOF`
+        # was previously unparseable (the `<<` raised _ParseError for the
+        # whole compound), so `git commit` never reached the git-commit ASK
+        # rule. Splitter now handles heredocs, so this splits on `&&`.
+        segments = extract_commands("git add -A && git commit -F - <<'EOF'\nfix: msg\nEOF")
+        assert segments is not None
+        assert len(segments) == 2
+        assert segments[0] == "git add -A"
+        assert segments[1].startswith("git commit -F - <<'EOF'")
+        assert "fix: msg" in segments[1]
+
+    def test_heredoc_dash_tab_strip(self):
+        # `<<-EOF` allows leading tabs on the closing delimiter line.
+        segments = extract_commands("cat <<-EOF\n\thello\n\tEOF")
+        assert segments is not None
+        assert len(segments) == 1
+
+    def test_heredoc_quoted_delimiter(self):
+        # `<<'EOF'` and `<<"EOF"` both work.
+        for inp in ("cat <<'EOF'\nbody\nEOF", 'cat <<"EOF"\nbody\nEOF'):
+            segments = extract_commands(inp)
+            assert segments is not None, inp
+            assert len(segments) == 1, inp
+
+    def test_heredoc_unterminated_returns_none(self):
+        # An unclosed heredoc is still a parse failure.
+        assert extract_commands("cat <<EOF\nno closing") is None
+
+    def test_here_string_is_parsed(self):
+        # `<<<` is a here-string, not a heredoc; the value after it is just
+        # another argument token.
+        segments = extract_commands('cat <<< "input"')
+        assert segments is not None
+        assert len(segments) == 1
 
     def test_ansi_c_quoting_returns_none(self):
         # $'...' has its own escape rules; we conservatively bail out.
@@ -1337,9 +1379,11 @@ class TestEvaluateCommand:
         decision, _ = evaluate_command('echo "unbalanced')
         assert decision == "llm"
 
-    def test_heredoc_resolves_to_llm(self):
+    def test_heredoc_resolves_via_rules(self):
+        # `uv run` matches the uv-safe ALLOW rule; the heredoc body is part
+        # of the segment but does not contain any deny/ask trigger.
         decision, _ = evaluate_command("uv run python3 - <<PY\nprint(1)\nPY")
-        assert decision == "llm"
+        assert decision == "allow"
 
     def test_ansi_c_quoting_resolves_to_llm(self):
         decision, _ = evaluate_command("echo $'hello'")
@@ -1349,49 +1393,59 @@ class TestEvaluateCommand:
         decision, _ = evaluate_command("a) echo x ;; b) echo y")
         assert decision == "llm"
 
-    def test_unparseable_with_deny_pattern_is_denied(self):
-        # Defense in depth: a heredoc body containing `rm -rf /` must still
-        # be blocked even though the splitter cannot tokenize the command.
+    def test_heredoc_with_deny_pattern_in_body_is_denied(self):
+        # Defense in depth: a heredoc body containing `rm -rf /` is included
+        # in the segment, and the MULTILINE deny rules find the pattern.
         decision, reason = evaluate_command("cat <<EOF\nrm -rf /\nEOF")
         assert decision == "deny"
         assert "rm-rf-root" in reason
 
-    def test_unparseable_with_sudo_is_denied(self):
-        # sudo at command start, heredoc making it unparseable.
+    def test_heredoc_with_sudo_head_is_denied(self):
         decision, reason = evaluate_command("sudo cat <<EOF\nhello\nEOF")
         assert decision == "deny"
         assert "sudo" in reason
 
-    def test_unparseable_with_sudo_inside_heredoc_body_is_denied(self):
-        # MULTILINE compilation lets ^-anchored deny rules catch sudo even
-        # when embedded in a heredoc body that the splitter cannot parse.
+    def test_heredoc_with_sudo_inside_body_is_denied(self):
+        # MULTILINE deny matches `sudo` on the body line of `bash <<EOF`.
         decision, reason = evaluate_command("bash <<EOF\nsudo rm /etc/passwd\nEOF")
         assert decision == "deny"
         assert "sudo" in reason
 
-    def test_unparseable_heredoc_commit_is_asked(self):
-        # The motivating case for the parse-fail ASK check: claude often
-        # creates commits via heredoc messages, which the splitter cannot
-        # parse. Without ASK in the parse-fail path, the new git-commit ASK
-        # rule was bypassed and the LLM judge would silently approve the
-        # commit. The full string starts with `git commit`, so the
-        # ^-anchored ASK regex matches.
+    def test_heredoc_commit_is_asked(self):
+        # The motivating case: heredoc commit messages used to bypass the
+        # `git-commit` ASK rule via parse failure. Now the splitter handles
+        # heredocs, so the segment starts with `git commit` and the ASK rule
+        # matches.
         decision, reason = evaluate_command("git commit -m \"$(cat <<'EOF'\nfeat: msg\nEOF\n)\"")
         assert decision == "ask"
         assert "git-commit" in reason
 
-    def test_unparseable_heredoc_other_ask_rules_still_apply(self):
-        # The parse-fail ASK path is general, not git-commit-specific.
-        # `gh workflow run` via heredoc also gets ASKed.
+    def test_heredoc_commit_chained_with_add_is_asked(self):
+        # The real failing case from the logs: `git add -A && git commit -F -
+        # <<'EOF' ...`. Previously the entire compound was unparseable so
+        # the git-commit ASK rule never saw it. With splitter heredoc
+        # support, the compound splits into `git add -A` (ALLOW) and
+        # `git commit -F - <<'EOF'...EOF` (ASK), and aggregation gives ASK.
+        decision, reason = evaluate_command(
+            "git add -A && git commit -F - <<'EOF'\nfeat: msg\nEOF"
+        )
+        assert decision == "ask"
+        assert "git-commit" in reason
+
+    def test_heredoc_commit_chained_with_push_is_asked(self):
+        # Same shape with a trailing `&& git push` after the heredoc:
+        # `git add -A && git commit -F - <<'EOF' && git push` — the `&&`
+        # on the indicator line still separates commands before the body.
+        decision, _ = evaluate_command(
+            "git add -A && git commit -F - <<'EOF' && git push\nfeat: msg\nEOF"
+        )
+        assert decision == "ask"
+
+    def test_heredoc_workflow_run_is_asked(self):
         decision, _ = evaluate_command(
             "gh workflow run deploy.yml --field body=\"$(cat <<'EOF'\nx\nEOF\n)\""
         )
         assert decision == "ask"
-
-    def test_unparseable_heredoc_with_no_ask_match_falls_to_llm(self):
-        # Heredocs without an ASK-matching head should still LLM as before.
-        decision, _ = evaluate_command("cat <<EOF\nplain text\nEOF")
-        assert decision == "llm"
 
     # --- Variable assignment ---
 
