@@ -332,12 +332,11 @@ def _parse_heredoc_delim(s: str, i: int, end: int) -> tuple[str, bool, int]:
     Recognizes ``<<DELIM``, ``<<-DELIM`` (tab-stripping form), and quoted
     delimiters ``<<'DELIM'`` / ``<<"DELIM"``.
     """
-    j = i + 2  # skip ``<<``
+    j = i + 2
     tab_strip = False
     if j < end and s[j] == "-":
         tab_strip = True
         j += 1
-    # Bash allows optional whitespace between `<<` and the delimiter.
     while j < end and s[j] in " \t":
         j += 1
     if j >= end:
@@ -396,9 +395,8 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
     commands are also collected.
     """
     inner_subs: list[tuple[int, int]] = []
-    # Heredocs declared on the current logical line: their bodies appear after
-    # the next newline. We queue (delim, tab_strip) pairs at ``<<DELIM`` and
-    # drain them when the line terminator is reached.
+    # Heredoc bodies follow the next newline after their ``<<DELIM`` marker,
+    # so we queue declarations here and drain them when ``\n`` is reached.
     pending_heredocs: list[tuple[str, bool]] = []
     i = start
     cmd_start = _skip_ws(s, start, end)
@@ -444,13 +442,10 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
             inner_subs.append((inner_start, i - 1))
             continue
 
-        # --- Heredocs ``<<DELIM`` and here-strings ``<<<`` ---
-        # ``<<<`` (here-string) is a redirection whose right-hand side is just
-        # the next word/string token — let normal scanning consume it.
-        # ``<<DELIM`` queues a pending heredoc; the body is skipped when the
-        # current logical line terminates (``\n`` handler below).
+        # --- Heredocs and here-strings ---
         if c == "<" and i + 1 < end and s[i + 1] == "<":
             if i + 2 < end and s[i + 2] == "<":
+                # ``<<<`` here-string: the value is a normal token, skip the op.
                 i += 3
                 continue
             delim, tab_strip, i = _parse_heredoc_delim(s, i, end)
@@ -521,10 +516,8 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
 
         if c == "\n":
             if pending_heredocs:
-                # Heredoc body+closing-delim belong to the same logical
-                # command as the indicator. Consume them into the current
-                # segment so rule matching (especially MULTILINE deny rules)
-                # still sees body content like `sudo rm /etc/passwd`.
+                # Heredoc body+closing-delim are absorbed into the current
+                # segment so MULTILINE deny rules still see body content.
                 i += 1
                 while pending_heredocs:
                     delim, tab_strip = pending_heredocs.pop(0)
@@ -541,7 +534,6 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
         i += 1
 
     if pending_heredocs:
-        # End-of-input reached while heredocs are still awaiting their bodies.
         raise _ParseError("unterminated heredoc at end of input")
     emit(end)
 
@@ -620,13 +612,9 @@ def evaluate_command(
     segments = extract_commands(command)
     if segments is None:
         # Defense-in-depth scan over the full string before LLM fallback.
-        # Both DENY and ASK rules are consulted: without the ASK check, a
-        # heredoc form like `git commit -m "$(cat <<'EOF' ... EOF)"` would
-        # bypass the `git-commit` ASK rule (the splitter can't parse `<<`
-        # so segments is None) and fall straight to LLM. The ASK rules are
-        # anchored with `^\s*`, so they only match commands whose head is
-        # the expected program — heredoc bodies inside the command don't
-        # cause spurious matches.
+        # Both DENY and ASK rules are anchored at ``^\s*<head>`` so they
+        # only match when the unparseable command's head is the rule's
+        # expected program.
         deny = match_deny(command)
         if deny:
             return "deny", f"Blocked by deny rule: {deny.name}"

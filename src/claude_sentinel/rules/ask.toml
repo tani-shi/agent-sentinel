@@ -139,9 +139,6 @@ name = "git-push-force"
 command_regex = '''^\s*git\s+push\s+.*--force(?!-with-lease)'''
 
 # --- Git Commit Policy ---
-# Mechanically enforce the "never auto-commit" policy by asking on every
-# git commit (including --amend). `commit` was removed from the allow rule
-# `git-local-ops` in allow.toml so this ASK takes effect.
 
 [[rules]]
 name = "git-commit"

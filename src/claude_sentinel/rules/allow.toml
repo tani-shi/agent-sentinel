@@ -69,20 +69,13 @@ command_regex = '''^\s*cd(\s|$)'''
 name = "variable-assignment"
 command_regex = '''^\s*[A-Za-z_][A-Za-z0-9_]*=('[^']*'|"[^"`$]*"|[\w./:@%+-]*)\s*$'''
 
-# `FOO=$(cmd)` assignment from command substitution. The splitter extracts
-# the inner `$(...)` as its own segment and evaluates it independently. The
-# `\)\s*$` end anchor is load-bearing: without it, `FOO=$(safe) make deploy`
-# would match (because the splitter does NOT split env-var prefixes off the
-# trailing command), silently ALLOW'ing any trailing command after a benign
-# substitution. With the anchor, the rule matches only isolated assignments
-# and trailing-command forms fall through to LLM judge.
+# The `\)\s*$` end anchor is required: the splitter does NOT separate
+# env-var prefixes from trailing commands, so `FOO=$(safe) make deploy`
+# would otherwise match and silently allow the trailing command.
 
 [[rules]]
 name = "var-assign-substitution"
 command_regex = '''^\s*[A-Za-z_][A-Za-z0-9_]*=\$\([\s\S]*\)\s*$'''
-
-# `export FOO=$(cmd)` — splitter recurses into `$(...)` as a nested segment
-# (see var-assign-substitution comment above); the export wrapper is safe.
 
 [[rules]]
 name = "export"
@@ -182,11 +175,8 @@ command_regex = '''\s--version(\s|$)'''
 name = "git-status"
 command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(status|log|diff|branch|show|rev-parse|remote)(\s|$)'''
 
-# Local git write ops that don't touch the remote. `commit` is intentionally
-# excluded — the `git-commit` ask rule mechanically enforces the
-# "never auto-commit" policy. `push` lives in `git-push-safe` / `git-push-broad`.
-# Renamed from the pre-existing `git-add-commit` (which had grown to cover
-# 11 verbs while the name suggested only two).
+# `commit` is intentionally excluded — the `git-commit` ask rule enforces
+# the "never auto-commit" policy.
 
 [[rules]]
 name = "git-local-ops"

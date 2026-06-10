@@ -228,10 +228,8 @@ class TestAllowRules:
             assert evaluate_command(cmd)[0] == "ask", cmd
 
     def test_make_arbitrary_target_allowed(self):
-        # Project-specific targets that don't trip ASK rules should ALLOW.
-        # Includes `make deployment-*` (a CI/build artifact target whose name
-        # happens to start with "deploy" as a noun-form prefix, NOT a deploy
-        # action) — must not be falsely escalated to ASK by `deploy[\w-]*`.
+        # `make deployment-*` / `make deployer-*`: noun-form prefix, not a
+        # deploy action — must not be caught by `deploy[\w-]*`.
         for cmd in (
             "make door-ne-download",
             "make door-ne-update",
@@ -244,9 +242,8 @@ class TestAllowRules:
             assert evaluate_command(cmd)[0] == "allow", cmd
 
     def test_make_tf_read_only_targets_allowed(self):
-        # tf-/terraform- targets with read-only verbs are excluded from the
-        # make-deploy ASK rule. The exclusion list matches the verbs in the
-        # terraform-read allow rule.
+        # tf-/terraform- read-only verbs are excluded from make-deploy ASK
+        # to mirror the terraform-read allow rule.
         for cmd in (
             "make tf-fmt",
             "make tf-validate",
@@ -773,9 +770,8 @@ class TestAskRules:
         assert match_ask("make predeploy") is not None
         assert match_ask("make postdeploy-hooks") is not None
 
-    # Negative coverage for the tf-/terraform- read-only exclusion is in
-    # TestAllowRules.test_make_tf_read_only_targets_allowed — `evaluate_command
-    # == "allow"` strictly implies no ASK rule matched (deny > ask > allow).
+    # tf-/terraform- read-only exclusion is covered by
+    # TestAllowRules.test_make_tf_read_only_targets_allowed (allow > ask).
 
     def test_make_build_not_asked(self):
         assert match_ask("make build") is None
@@ -958,17 +954,14 @@ class TestAskRules:
         assert match_ask("rm file.txt") is None
         assert match_ask("trash file.txt") is None
 
-    # --- git commit (auto-commit guard) ---
     def test_git_commit_asked(self):
-        # Every `git commit` must confirm; LLM_JUDGE logs showed Claude
-        # auto-committing via heredoc forms despite CLAUDE.md saying not to.
         assert match_ask("git commit -m 'test'") is not None
         assert match_ask("git commit -am 'test'") is not None
         assert match_ask("git commit --amend --no-edit") is not None
         assert match_ask("git -C /tmp/repo commit -m 'test'") is not None
 
     def test_git_commit_no_false_positive(self):
-        # `git commit-tree` (low-level plumbing) is a different command.
+        # `git commit-tree` / `commit-graph` are plumbing commands.
         assert match_ask("git commit-tree abc123") is None
 
     # --- git destructive operations ---
@@ -1226,11 +1219,9 @@ class TestExtractCommands:
         assert "cat <<EOF" in segments[0]
         assert "hello" in segments[0]
 
-    def test_heredoc_compound_splits_correctly(self):
-        # The user's auto-commit case: `git add . && git commit -F - <<EOF`
-        # was previously unparseable (the `<<` raised _ParseError for the
-        # whole compound), so `git commit` never reached the git-commit ASK
-        # rule. Splitter now handles heredocs, so this splits on `&&`.
+    def test_heredoc_compound_splits_on_operator(self):
+        # `<<DELIM` on the indicator line must not prevent the splitter from
+        # splitting earlier `&&` / `;` / `|` operators on the same line.
         segments = extract_commands("git add -A && git commit -F - <<'EOF'\nfix: msg\nEOF")
         assert segments is not None
         assert len(segments) == 2
@@ -1239,25 +1230,20 @@ class TestExtractCommands:
         assert "fix: msg" in segments[1]
 
     def test_heredoc_dash_tab_strip(self):
-        # `<<-EOF` allows leading tabs on the closing delimiter line.
         segments = extract_commands("cat <<-EOF\n\thello\n\tEOF")
         assert segments is not None
         assert len(segments) == 1
 
     def test_heredoc_quoted_delimiter(self):
-        # `<<'EOF'` and `<<"EOF"` both work.
         for inp in ("cat <<'EOF'\nbody\nEOF", 'cat <<"EOF"\nbody\nEOF'):
             segments = extract_commands(inp)
             assert segments is not None, inp
             assert len(segments) == 1, inp
 
     def test_heredoc_unterminated_returns_none(self):
-        # An unclosed heredoc is still a parse failure.
         assert extract_commands("cat <<EOF\nno closing") is None
 
     def test_here_string_is_parsed(self):
-        # `<<<` is a here-string, not a heredoc; the value after it is just
-        # another argument token.
         segments = extract_commands('cat <<< "input"')
         assert segments is not None
         assert len(segments) == 1
@@ -1412,20 +1398,11 @@ class TestEvaluateCommand:
         assert "sudo" in reason
 
     def test_heredoc_commit_is_asked(self):
-        # The motivating case: heredoc commit messages used to bypass the
-        # `git-commit` ASK rule via parse failure. Now the splitter handles
-        # heredocs, so the segment starts with `git commit` and the ASK rule
-        # matches.
         decision, reason = evaluate_command("git commit -m \"$(cat <<'EOF'\nfeat: msg\nEOF\n)\"")
         assert decision == "ask"
         assert "git-commit" in reason
 
     def test_heredoc_commit_chained_with_add_is_asked(self):
-        # The real failing case from the logs: `git add -A && git commit -F -
-        # <<'EOF' ...`. Previously the entire compound was unparseable so
-        # the git-commit ASK rule never saw it. With splitter heredoc
-        # support, the compound splits into `git add -A` (ALLOW) and
-        # `git commit -F - <<'EOF'...EOF` (ASK), and aggregation gives ASK.
         decision, reason = evaluate_command(
             "git add -A && git commit -F - <<'EOF'\nfeat: msg\nEOF"
         )
@@ -1433,9 +1410,6 @@ class TestEvaluateCommand:
         assert "git-commit" in reason
 
     def test_heredoc_commit_chained_with_push_is_asked(self):
-        # Same shape with a trailing `&& git push` after the heredoc:
-        # `git add -A && git commit -F - <<'EOF' && git push` — the `&&`
-        # on the indicator line still separates commands before the body.
         decision, _ = evaluate_command(
             "git add -A && git commit -F - <<'EOF' && git push\nfeat: msg\nEOF"
         )
@@ -1470,20 +1444,14 @@ class TestEvaluateCommand:
         assert decision == "ask"
 
     def test_var_assign_substitution_safe_inner_allowed(self):
-        # VAR=$(...) wrapper is an allow target; the inner command is split out
-        # and evaluated independently, so a safe inner keeps the aggregate allow.
         assert match_allow("DOOR_SESSION=$(uv run python3 login.py)") is not None
         decision, _ = evaluate_command("DOOR_SESSION=$(uv run --no-project python3 login.py)")
         assert decision == "allow"
 
     def test_var_assign_substitution_rejects_trailing_command(self):
-        # `VAR=$(safe) trailing-cmd` must NOT be silently allowed: the splitter
-        # emits the whole string as one outer segment plus the inner `$(...)`
-        # as a nested segment — env-var prefixes are NOT split off the trailing
-        # command. Without the `\)\s*$` end anchor, the outer wrapper would
-        # match ALLOW and the trailing command (make deploy / git commit /
-        # gh workflow run) would escape every ASK rule. The anchor forces
-        # these forms to fall through to LLM judge.
+        # The splitter does NOT separate env-var prefixes from trailing
+        # commands, so the end anchor is the only guard against silent
+        # allow of `VAR=$(safe) <trailing-ASK-cmd>`.
         for cmd in (
             "TOKEN=$(echo x) make deploy",
             "SESSION=$(echo x) git commit -m bypass",
