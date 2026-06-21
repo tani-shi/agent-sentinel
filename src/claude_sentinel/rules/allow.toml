@@ -135,6 +135,10 @@ command_regex = '''^\s*uuidgen\s*'''
 name = "diff"
 command_regex = '''^\s*diff\s+'''
 
+[[rules]]
+name = "checksum"
+command_regex = '''^\s*(shasum|md5|md5sum|sha1sum|sha224sum|sha256sum|sha384sum|sha512sum|cksum)(\s|$)'''
+
 # --- Text Processing ---
 
 [[rules]]
@@ -148,6 +152,10 @@ command_regex = '''^\s*(sort|uniq|cut|tr|tee|xargs)\s*'''
 [[rules]]
 name = "jq"
 command_regex = '''^\s*jq(\s|$)'''
+
+[[rules]]
+name = "xmllint"
+command_regex = '''^\s*xmllint(\s|$)'''
 
 # --- Shell Runners ---
 
@@ -461,6 +469,10 @@ command_regex = '''^\s*figlet(\s|$)'''
 [[rules]]
 name = "trivial-text-utils"
 command_regex = '''^\s*(factor|cal|tac|yes|shuf|seq|rev)(\s|$)'''
+
+[[rules]]
+name = "printf"
+command_regex = '''^\s*printf(\s|$)'''
 
 # --- Homebrew ---
 
