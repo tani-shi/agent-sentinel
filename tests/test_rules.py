@@ -572,6 +572,20 @@ class TestAllowRules:
         assert match_allow('fam db read "SELECT 1"') is not None
         assert match_allow("fam db tables") is not None
 
+    def test_xmllint(self):
+        assert match_allow("xmllint --format config.xml") is not None
+        assert match_allow("xmllint --noout config.xml") is not None
+
+    def test_checksum(self):
+        assert match_allow("shasum -a 256 migration.sql") is not None
+        assert match_allow("md5sum file.bin") is not None
+        assert match_allow("sha256sum file.bin") is not None
+        assert match_allow("cksum file.txt") is not None
+
+    def test_printf(self):
+        assert match_allow("printf 'hello\\n'") is not None
+        assert match_allow("printf '%s\\n' a b") is not None
+
 
 class TestSensitivePathRules:
     # A. Environment / config files
@@ -1200,9 +1214,42 @@ class TestExtractCommands:
 
     def test_subshell(self):
         segs = extract_commands("(cd /tmp; rm -rf foo)")
-        # The outer subshell is itself a command, plus its inner two.
+        # A command-position group is unwrapped: only its inner commands are
+        # emitted, never the literal ``(...)`` wrapper (which matches no rule
+        # and would force a needless LLM fallback).
         assert "cd /tmp" in segs
         assert "rm -rf foo" in segs
+        assert not any(seg.lstrip().startswith("(") for seg in segs)
+
+    def test_subshell_in_or_branch(self):
+        # The `… || (echo FAIL; tail log)` idiom must not leave a `(`-prefixed
+        # wrapper segment behind.
+        segs = extract_commands("make check || (echo FAIL; tail -30 /tmp/c.log)")
+        assert "make check" in segs
+        assert "echo FAIL" in segs
+        assert "tail -30 /tmp/c.log" in segs
+        assert not any(seg.lstrip().startswith("(") for seg in segs)
+
+    def test_subshell_trailing_redirect_preserved(self):
+        # The redirect lives outside the parens; unwrapping must keep it in a
+        # segment so deny rules still see it.
+        assert evaluate_command("(echo secret) >> .env")[0] == "deny"
+
+    def test_brace_group(self):
+        segs = extract_commands("{ echo hi; echo bye; }")
+        assert "echo hi" in segs
+        assert "echo bye" in segs
+        assert not any(seg.lstrip().startswith(("{", "}")) for seg in segs)
+
+    def test_brace_group_deny_preserved(self):
+        assert evaluate_command("{ rm -rf / ; }")[0] == "deny"
+
+    def test_brace_literal_not_treated_as_group(self):
+        # `{}` with no following whitespace is a literal (find placeholder),
+        # not a brace group — left intact as one segment.
+        assert extract_commands("find . -name '*.tmp' -exec rm {} +") == [
+            "find . -name '*.tmp' -exec rm {} +"
+        ]
 
     def test_escaped_operator_is_data(self):
         # \&\& is two escaped chars, not the && operator.

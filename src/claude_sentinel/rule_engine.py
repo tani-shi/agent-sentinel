@@ -437,9 +437,28 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
             # ANSI-C quoting $'...' has its own escape rules we don't model.
             raise _ParseError("$'...' ANSI-C quoting not supported")
         if c == "(":
+            at_command_start = _skip_ws(s, cmd_start, i) == i
             inner_start = i + 1
             i = _skip_paren(s, i, end)
             inner_subs.append((inner_start, i - 1))
+            if at_command_start:
+                # A command-position subshell isn't a command itself; its body
+                # is collected above for recursion. Drop the ``(...)`` wrapper
+                # from the emitted segment (it matches no rule, forcing a
+                # needless LLM fallback) while leaving any trailing redirection
+                # as its own segment so deny rules still see it.
+                cmd_start = i
+            continue
+
+        # A command-position ``{ …; }`` brace group. Bash requires whitespace
+        # after the brace, which distinguishes it from ``${…}`` (handled above)
+        # and literals like ``find … {} +``. Same treatment as a subshell:
+        # unwrap to the inner commands, keep any trailing redirection.
+        if c == "{" and _skip_ws(s, cmd_start, i) == i and i + 1 < end and s[i + 1] in " \t\n":
+            inner_start = i + 1
+            i = _skip_brace(s, i, end, None)
+            inner_subs.append((inner_start, i - 1))
+            cmd_start = i
             continue
 
         # --- Heredocs and here-strings ---
