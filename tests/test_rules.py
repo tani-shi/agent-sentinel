@@ -283,6 +283,28 @@ class TestAllowRules:
     def test_cargo_not_allowed(self):
         assert match_allow("cargo publish") is None
 
+    def test_dotnet(self):
+        assert match_allow("dotnet build Kai.slnx -c Debug") is not None
+        assert match_allow("dotnet run --no-build -c Debug") is not None
+        assert match_allow("dotnet test") is not None
+        assert match_allow("dotnet publish") is not None
+        assert match_allow("dotnet Kai.Service.dll") is not None
+        assert match_allow("dotnet bin/Debug/net10.0/Kai.ConsoleTools.dll") is not None
+        assert (
+            match_allow("msbuild Kai.Service/Kai.Service.csproj -getProperty:DefineConstants")
+            is not None
+        )
+
+    def test_dotnet_not_allowed(self):
+        # DB migrations, package publishing, and tool installs stay out of the
+        # allow rule so they escalate to the LLM judge / ask.
+        assert match_allow("dotnet ef database update") is None
+        assert match_allow("dotnet nuget push pkg.nupkg") is None
+        assert match_allow("dotnet tool install -g foo") is None
+
+    def test_until(self):
+        assert match_allow("until ! pgrep -f foo; do sleep 5; done") is not None
+
     def test_docker(self):
         assert match_allow("docker build .") is not None
         assert match_allow("docker compose up") is not None
