@@ -43,6 +43,10 @@ name = "shell-constructs"
 command_regex = '''^\s*(for|while|if|case|do|done|then|else|elif|fi|esac)(\s|$)'''
 
 [[rules]]
+name = "until"
+command_regex = '''^\s*until(\s|$)'''
+
+[[rules]]
 name = "pushd-popd"
 command_regex = '''^\s*(pushd|popd)(\s|$)'''
 
@@ -261,6 +265,16 @@ command_regex = '''^\s*cargo\s+(build|check|test|run|bench|clean|doc|new|init|fm
 [[rules]]
 name = "go"
 command_regex = '''^\s*go\s+(build|run|test|mod|fmt|vet)(\s|$)'''
+
+# --- .NET ---
+
+[[rules]]
+name = "dotnet"
+command_regex = '''^\s*dotnet\s+(build|run|test|restore|publish|clean|format|msbuild|watch|list|sln|pack|vstest|nuget\s+locals|--info|--version|--list-sdks|--list-runtimes)(\s|$)|^\s*dotnet\s+\S*\.dll(\s|$)'''
+
+[[rules]]
+name = "msbuild"
+command_regex = '''^\s*msbuild(\s|$)'''
 
 # --- Make ---
 # Trust the project's Makefile the same way we trust cargo/npm/uv/go: any
