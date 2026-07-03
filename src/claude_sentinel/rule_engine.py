@@ -149,6 +149,27 @@ def match_sensitive_path(file_path: str) -> Rule | None:
     return None
 
 
+# `sed -i`/`--in-place` writes files directly. Unlike the Write/Edit tools,
+# a bash command never passes through the sensitive_path_rules, so an in-place
+# sed would otherwise be a backdoor around that protection while the generic
+# `sed` allow rule waves it through. Reusing match_sensitive_path (rather than
+# duplicating the path patterns here) keeps the two in sync: any path added to
+# sensitive_path_rules is automatically off-limits to `sed -i` too.
+_SED_INPLACE = re.compile(r"^\s*sed\s+(-[a-zA-Z]*i|--in-place)")
+
+
+def match_inplace_write_sensitive(command: str) -> Rule | None:
+    """Deny an in-place ``sed`` edit whose file argument is a sensitive path."""
+    normalized = normalize_for_matching(command)
+    if not (_SED_INPLACE.search(command) or _SED_INPLACE.search(normalized)):
+        return None
+    for token in command.split():
+        hit = match_sensitive_path(token)
+        if hit:
+            return hit
+    return None
+
+
 def reset_cache() -> None:
     """Reset the rule cache (useful for testing)."""
     global _deny_rules, _allow_rules, _ask_rules
@@ -603,7 +624,7 @@ def _evaluate_segment(segment: str) -> tuple[str, Rule | None]:
     Returns (decision, matched_rule) where decision is one of
     'deny', 'ask', 'allow', 'unmatched'.
     """
-    deny = match_deny(segment)
+    deny = match_deny(segment) or match_inplace_write_sensitive(segment)
     if deny:
         return "deny", deny
     ask = match_ask(segment)
@@ -634,7 +655,7 @@ def evaluate_command(
         # Both DENY and ASK rules are anchored at ``^\s*<head>`` so they
         # only match when the unparseable command's head is the rule's
         # expected program.
-        deny = match_deny(command)
+        deny = match_deny(command) or match_inplace_write_sensitive(command)
         if deny:
             return "deny", f"Blocked by deny rule: {deny.name}"
         ask = match_ask(command)
