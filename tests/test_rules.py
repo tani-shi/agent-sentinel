@@ -1036,9 +1036,12 @@ class TestAskRules:
         assert match_ask("docker-compose up") is None
 
     # --- sed in-place ---
-    def test_sed_in_place(self):
-        assert match_ask("sed -i 's/foo/bar/' file.txt") is not None
-        assert match_ask("sed --in-place 's/foo/bar/' file.txt") is not None
+    # A plain in-place edit is no longer asked: the Write/Edit tools are
+    # already allowed, so gating `sed -i` on an ordinary file was redundant.
+    # Only sensitive-path targets are blocked (see TestInplaceWriteSensitive).
+    def test_sed_in_place_not_asked(self):
+        assert match_ask("sed -i 's/foo/bar/' file.txt") is None
+        assert match_ask("sed --in-place 's/foo/bar/' file.txt") is None
 
     def test_sed_stdout_not_asked(self):
         assert match_ask("sed 's/foo/bar/' file.txt") is None
@@ -1332,6 +1335,29 @@ class TestExtractCommands:
 
     def test_double_amp_inside_single_quotes_is_data(self):
         assert extract_commands("echo 'cmd1 && cmd2'") == ["echo 'cmd1 && cmd2'"]
+
+
+class TestInplaceWriteSensitive:
+    """`sed -i` must not become a bash backdoor around the sensitive-path
+    deny rules that guard the Write/Edit tools."""
+
+    def test_sed_inplace_ordinary_file_allowed(self):
+        assert evaluate_command("sed -i 's/foo/bar/' src/main.py")[0] == "allow"
+        assert evaluate_command("sed --in-place 's/a/b/' README.md")[0] == "allow"
+
+    def test_sed_inplace_sensitive_denied(self):
+        for cmd in (
+            "sed -i 's/foo/bar/' .env",
+            "sed -i.bak 's/foo/bar/' config/.env.production",
+            "sed --in-place 's/x/y/' ~/.ssh/config",
+            "sed -i 's/a/b/' ~/.aws/credentials",
+            "sed -i 's/a/b/' server.pem",
+        ):
+            assert evaluate_command(cmd)[0] == "deny", cmd
+
+    def test_sed_stdout_sensitive_not_denied(self):
+        # No in-place flag: reading .env to stdout is not a write.
+        assert evaluate_command("sed 's/foo/bar/' .env")[0] != "deny"
 
 
 class TestEvaluateCommand:

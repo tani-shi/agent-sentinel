@@ -75,7 +75,7 @@ Tools with external impact (e.g. Slack send/schedule/canvas tools) require user 
 
 ## Sensitive path deny rules (RULE_DENY)
 
-Sensitive files blocked from `Read`, `Write`, `Edit`, and `MultiEdit` tools:
+Sensitive files blocked from `Read`, `Write`, `Edit`, and `MultiEdit` tools. The same patterns also deny an in-place `sed -i` / `sed --in-place` whose target file matches one of them — otherwise a bash command would be a backdoor around the protection the file tools enforce:
 
 | Category | Rule | Pattern |
 |----------|------|---------|
@@ -142,7 +142,7 @@ Common development commands are auto-approved, including:
 - Cloud: `aws` read operations (`list`, `describe`, `get`, `show`, `wait`), `gcloud` read operations (including `logging read` and `logging tail`)
 - macOS: `launchctl` read operations (`list`, `print`, `blame`), `plutil` read (`-p`, `-lint`), `sample` (process profiling), `defaults read`, `mdfind` (Spotlight), `log show` (unified log), `fswatch` (filesystem events), `crontab -l`, `atq`
 - Process inspection: `ps`, `pgrep`, `lsof`
-- Utilities: `echo`, `pwd`, `which`, `date`, `sort`, `sed` (excludes `sed -i`), `awk`, `tar`, `zip`, `zipinfo`, `stat`, `env`, `printenv`
+- Utilities: `echo`, `pwd`, `which`, `date`, `sort`, `sed` (`sed -i` on a sensitive path is denied; see below), `awk`, `tar`, `zip`, `zipinfo`, `stat`, `env`, `printenv`
 - Variable assignments: `VAR='value'`, `VAR="value"`, `VAR=word` (static values only; `VAR=$(...)` is split and its inner command is evaluated independently)
 - `export VAR=...` (the inner `$(...)` is split out and evaluated independently)
 
@@ -156,7 +156,6 @@ Commands that prompt user confirmation without LLM evaluation:
 - `git reset --hard` — discard uncommitted changes
 - `git checkout -- <path>` — discard file changes
 - `git clean` — delete untracked files
-- `sed -i` / `sed --in-place` — in-place file editing
 - `osascript` — AppleScript execution (GUI control, keystrokes)
 - `docker compose exec` / `docker compose run` — arbitrary command execution in containers
 - `npx` / `pnpx` / `bunx` — arbitrary package execution (safe dev tools like `prettier`, `tsc`, `eslint` are auto-allowed)
