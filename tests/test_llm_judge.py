@@ -54,22 +54,31 @@ class TestEvaluateSDK:
         assert decision == "ask"
         assert reason == "Needs review"
 
+    @patch("claude_sentinel.llm_judge.time.sleep")
     @patch("claude_sentinel.llm_judge.asyncio.run", side_effect=TimeoutError("timed out"))
-    def test_sdk_timeout(self, mock_run):
+    def test_sdk_timeout(self, mock_run, mock_sleep):
         decision, reason = evaluate("some-command", "/tmp")
         assert decision == "ask"
         assert "timed out" in reason
         assert mock_run.call_count == 2
 
+    @patch("claude_sentinel.llm_judge.time.sleep")
     @patch(
         "claude_sentinel.llm_judge.asyncio.run",
         side_effect=[TimeoutError("timed out"), ("allow", "Safe command")],
     )
-    def test_sdk_timeout_then_success(self, mock_run):
+    def test_sdk_timeout_then_success(self, mock_run, mock_sleep):
         decision, reason = evaluate("some-command", "/tmp")
         assert decision == "allow"
         assert reason == "Safe command"
         assert mock_run.call_count == 2
+
+    @patch("claude_sentinel.llm_judge.time.sleep")
+    @patch("claude_sentinel.llm_judge.asyncio.run", side_effect=TimeoutError("timed out"))
+    def test_sdk_timeout_backoff_between_retries(self, mock_run, mock_sleep):
+        evaluate("some-command", "/tmp")
+        # Delay only between attempts, never after the final one.
+        assert mock_sleep.call_count == mock_run.call_count - 1
 
     @patch("claude_sentinel.llm_judge.asyncio.run", side_effect=Exception("connection failed"))
     def test_sdk_error(self, mock_run):

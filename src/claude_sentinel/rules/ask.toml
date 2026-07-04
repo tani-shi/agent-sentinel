@@ -132,11 +132,19 @@ command_regex = '''^\s*gh\s+api\s+.*(-X|--method)\s+(POST|PUT|DELETE|PATCH)'''
 name = "gh-workflow-mutate"
 command_regex = '''^\s*gh\s+workflow\s+(run|disable|enable|delete)(\s|$)'''
 
-# --- Git Force Push ---
+# --- Git Force Push / Remote Deletion ---
 
 [[rules]]
 name = "git-push-force"
-command_regex = '''^\s*git\s+push\s+.*--force(?!-with-lease)'''
+command_regex = '''^\s*git\s+push(?=\s)(?=.*\s(--force(?!-with-lease)\b|-[a-zA-Z]*f[a-zA-Z]*\b))'''
+
+[[rules]]
+name = "git-push-refspec-force"
+command_regex = '''^\s*git\s+push\s+.*\s\+\S'''
+
+[[rules]]
+name = "git-push-delete"
+command_regex = '''^\s*git\s+push(?=\s)((?=.*\s(--delete|-d)\b)|(?=.*\s:\S))'''
 
 # --- Git Commit Policy ---
 

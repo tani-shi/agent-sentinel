@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from importlib import resources
 
 _MODEL = "claude-haiku-4-5-20251001"
 _SDK_TIMEOUT = 30.0
 _MAX_RETRIES = 2
+_RETRY_DELAY_SECONDS = 1.0
 
 
 def _load_prompt_template() -> str:
@@ -45,11 +47,13 @@ def evaluate(command: str, cwd: str) -> tuple[str, str]:
     """
     prompt = _load_prompt_template().format(command=command, cwd=cwd)
     last_error = ""
-    for _attempt in range(_MAX_RETRIES):
+    for attempt in range(_MAX_RETRIES):
         try:
             return asyncio.run(_evaluate_sdk(prompt))
         except TimeoutError:
             last_error = "LLM judge timed out"
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(_RETRY_DELAY_SECONDS * (attempt + 1))
         except Exception as e:
             return "ask", f"LLM judge error: {e}"
     return "ask", last_error

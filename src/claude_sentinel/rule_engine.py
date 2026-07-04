@@ -92,36 +92,30 @@ def get_ask_rules() -> RuleSet:
     return _ask_rules
 
 
-def match_deny(command: str) -> Rule | None:
-    """Check if command matches any deny rule.
-
-    Tries the original command first, then a prefix-option-stripped form
-    (so ``git -c http.proxy= push --force origin main`` still hits the
-    ``force-push-main`` deny rule). The OR combination keeps deny safe:
-    if either form matches, the command is denied.
+def _match_command_rules(rules: list[Rule], command: str) -> Rule | None:
+    """Match a command against rules, trying the original form first and
+    then a prefix-option-stripped form (so ``git -c http.proxy= push
+    --force origin main`` still hits the ``force-push-main`` deny rule).
+    The OR combination keeps matching safe: if either form matches, the
+    rule applies.
     """
     normalized = normalize_for_matching(command)
-    for rule in get_deny_rules().command_rules:
+    for rule in rules:
         if rule.pattern.search(command):
             return rule
         if normalized != command and rule.pattern.search(normalized):
             return rule
     return None
+
+
+def match_deny(command: str) -> Rule | None:
+    """Check if command matches any deny rule."""
+    return _match_command_rules(get_deny_rules().command_rules, command)
 
 
 def match_allow(command: str) -> Rule | None:
-    """Check if command matches any allow rule.
-
-    Falls back to the prefix-option-stripped form so ``git -c x=y diff``
-    matches the same allow rule as ``git diff``.
-    """
-    normalized = normalize_for_matching(command)
-    for rule in get_allow_rules().command_rules:
-        if rule.pattern.search(command):
-            return rule
-        if normalized != command and rule.pattern.search(normalized):
-            return rule
-    return None
+    """Check if command matches any allow rule."""
+    return _match_command_rules(get_allow_rules().command_rules, command)
 
 
 def match_ask(command: str) -> Rule | None:
@@ -131,13 +125,7 @@ def match_ask(command: str) -> Rule | None:
     still match the ``git-reset-hard`` ask rule rather than falling
     through to LLM_JUDGE.
     """
-    normalized = normalize_for_matching(command)
-    for rule in get_ask_rules().command_rules:
-        if rule.pattern.search(command):
-            return rule
-        if normalized != command and rule.pattern.search(normalized):
-            return rule
-    return None
+    return _match_command_rules(get_ask_rules().command_rules, command)
 
 
 def match_sensitive_path(file_path: str) -> Rule | None:

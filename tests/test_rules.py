@@ -51,8 +51,27 @@ class TestDenyRules:
         assert match_deny("git push --force origin main") is not None
         assert match_deny("git push --force origin master") is not None
 
+    def test_force_push_main_short_flag(self):
+        assert match_deny("git push -f origin main") is not None
+        assert match_deny("git push -f origin master") is not None
+        assert match_deny("git push origin main -f") is not None
+        assert match_deny("git push origin main --force") is not None
+
+    def test_refspec_force_push_main(self):
+        assert match_deny("git push origin +main") is not None
+        assert match_deny("git push origin +HEAD:main") is not None
+
+    def test_push_delete_main(self):
+        assert match_deny("git push --delete origin main") is not None
+        assert match_deny("git push origin --delete master") is not None
+        assert match_deny("git push origin :main") is not None
+
     def test_force_with_lease_allowed(self):
         assert match_deny("git push --force-with-lease origin main") is None
+
+    def test_plain_push_main_not_denied(self):
+        assert match_deny("git push origin main") is None
+        assert match_deny("git push -u origin main") is None
 
     def test_env_write(self):
         assert match_deny("echo SECRET=foo > .env") is not None
@@ -470,6 +489,18 @@ class TestAllowRules:
         assert decision == "ask"
         decision, _ = evaluate_command("git push --force origin main")
         assert decision == "deny"
+        decision, _ = evaluate_command("git push -f origin main")
+        assert decision == "deny"
+        decision, _ = evaluate_command("git push origin +main")
+        assert decision == "deny"
+        decision, _ = evaluate_command("git push --delete origin main")
+        assert decision == "deny"
+        decision, _ = evaluate_command("git push -f origin feature")
+        assert decision == "ask"
+        decision, _ = evaluate_command("git push --delete origin feature")
+        assert decision == "ask"
+        decision, _ = evaluate_command("git push --force-with-lease origin main")
+        assert decision == "allow"
 
     def test_make_diff_validate(self):
         assert match_allow("make diff-config") is not None
@@ -894,8 +925,26 @@ class TestAskRules:
     def test_git_push_force(self):
         assert match_ask("git push --force origin feature") is not None
 
+    def test_git_push_force_short_flag(self):
+        assert match_ask("git push -f origin feature") is not None
+        assert match_ask("git push origin feature -f") is not None
+
+    def test_git_push_refspec_force(self):
+        assert match_ask("git push origin +feature") is not None
+        assert match_ask("git push origin +HEAD:feature") is not None
+
+    def test_git_push_delete(self):
+        assert match_ask("git push --delete origin feature") is not None
+        assert match_ask("git push origin -d feature") is not None
+        assert match_ask("git push origin :feature") is not None
+
     def test_git_push_force_with_lease_not_asked(self):
         assert match_ask("git push --force-with-lease origin feature") is None
+
+    def test_git_push_plain_not_asked(self):
+        assert match_ask("git push origin feature") is None
+        assert match_ask("git push -u origin feature") is None
+        assert match_ask("git push --tags") is None
 
     # --- curl/wget mutation ---
     def test_curl_mutate(self):

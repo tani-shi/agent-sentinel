@@ -69,7 +69,9 @@ Tools with external impact (e.g. Slack send/schedule/canvas tools) require user 
 | `mkfs` | `mkfs` / `mkfs.ext4` etc. |
 | `dd-zero` | `dd if=/dev/zero` or `/dev/urandom` |
 | `pipe-to-shell` | `curl \| bash`, `wget \| sh` |
-| `force-push-main` | `git push --force` to `main`/`master` (allows `--force-with-lease`) |
+| `force-push-main` | `git push --force` / `-f` to `main`/`master` (allows `--force-with-lease`) |
+| `refspec-force-push-main` | `git push origin +main` refspec force push |
+| `push-delete-main` / `refspec-delete-main` | `git push --delete origin main`, `git push origin :main` |
 | `env-write` | Writing to `.env` files via `>`, `>>`, `tee` |
 | `dynamic-linker-hijack` | Setting `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH` |
 
@@ -179,7 +181,7 @@ Commands that prompt user confirmation without LLM evaluation:
 - `docker push` — container registry push
 - `gh pr create` / `merge` / `close`, `gh issue create`, `gh release create`, `gh repo create` etc. — GitHub mutations
 - `gh api ... -X POST/PUT/DELETE/PATCH` — GitHub API mutations
-- `git push --force` (non-main; `--force-with-lease` is allowed)
+- `git push --force` / `-f`, `git push origin +branch`, `git push --delete` / `origin :branch` (non-main; `--force-with-lease` is allowed)
 - `curl`/`wget` with `-X POST/PUT/DELETE/PATCH` or `--data` flags — HTTP mutations
 - `gcloud ... create/delete/deploy/update` etc. — Google Cloud mutations
 - `aws ...` — AWS CLI (catch-all; read ops are allowed by ALLOW rules)
