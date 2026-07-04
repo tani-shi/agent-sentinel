@@ -190,10 +190,20 @@ def _remove_permissions(settings: dict, key: str, entries: list[str]) -> int:
 
 
 def _load_settings(path: Path) -> dict:
-    """Load settings from JSON file."""
+    """Load settings from JSON file.
+
+    Exits with an error on malformed JSON instead of crashing with a
+    traceback, so a corrupt settings.json is never silently overwritten.
+    """
     if path.exists():
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except json.JSONDecodeError as e:
+                raise SystemExit(
+                    f"Error: {path} contains invalid JSON ({e}). "
+                    "Fix or remove the file, then retry."
+                ) from e
     return {}
 
 

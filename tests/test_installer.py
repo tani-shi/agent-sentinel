@@ -36,6 +36,13 @@ class TestInstall:
         assert len(entries) == 1
         assert entries[0]["hooks"][0]["command"] == "claude-sentinel"
 
+    def test_install_malformed_settings(self, settings_file):
+        settings_file.write_text("{not valid json")
+        with pytest.raises(SystemExit, match="invalid JSON"):
+            install(settings_file)
+        # The malformed file must be left untouched.
+        assert settings_file.read_text() == "{not valid json"
+
     def test_install_existing_settings(self, settings_file):
         settings_file.write_text(json.dumps({"someKey": "value"}))
         install(settings_file)

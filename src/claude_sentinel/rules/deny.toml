@@ -28,7 +28,21 @@ command_regex = '''(curl|wget)\s+.*\|\s*(bash|sh|zsh|dash)'''
 
 [[rules]]
 name = "force-push-main"
-command_regex = '''git\s+push\s+.*--force(?!-with-lease).*\b(main|master)\b'''
+command_regex = '''git\s+push(?=\s)(?=.*\s(--force(?!-with-lease)\b|-[a-zA-Z]*f[a-zA-Z]*\b)).*\b(main|master)\b'''
+
+[[rules]]
+name = "refspec-force-push-main"
+command_regex = '''git\s+push\s+.*\s\+\S*\b(main|master)\b'''
+
+# Remote deletion of main/master: both `--delete`/`-d` and the empty-source
+# refspec form (`git push origin :main`).
+[[rules]]
+name = "push-delete-main"
+command_regex = '''git\s+push(?=\s)(?=.*\s(--delete|-d)\b).*\b(main|master)\b'''
+
+[[rules]]
+name = "refspec-delete-main"
+command_regex = '''git\s+push\s+.*\s:(main|master)\b'''
 
 [[rules]]
 name = "env-write"
