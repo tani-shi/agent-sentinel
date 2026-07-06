@@ -70,13 +70,26 @@ class TestInstall:
 
 
 class TestInstallPermissions:
-    def test_install_no_deny_permissions(self, settings_file, managed):
-        """Sensitive path deny is handled by hook, not settings.json."""
+    def test_install_adds_sensitive_path_deny(self, settings_file, managed):
+        """Blanket-allowed file tools bypass the PermissionRequest hook, so
+        sensitive paths must be denied via settings.json permission rules."""
         install(settings_file)
         settings = json.loads(settings_file.read_text())
-        assert managed["deny"] == []
-        perms = settings.get("permissions", {})
-        assert "deny" not in perms or perms["deny"] == []
+        deny = settings["permissions"]["deny"]
+        assert set(managed["deny"]).issubset(set(deny))
+        for tool in ("Read", "Write", "Edit", "MultiEdit"):
+            assert f"{tool}(**/.env)" in deny
+            assert f"{tool}(**/.env.*)" in deny
+            assert f"{tool}(**/.ssh/**)" in deny
+            assert f"{tool}(**/.aws/**)" in deny
+
+    def test_managed_deny_covers_every_sensitive_path_rule(self, managed):
+        from claude_sentinel.rule_engine import get_deny_rules
+
+        for rule in get_deny_rules().sensitive_path_rules:
+            assert rule.path_globs, f"{rule.name} has no path_glob"
+            for glob in rule.path_globs:
+                assert f"Read({glob})" in managed["deny"]
 
     def test_install_adds_permissions_allow(self, settings_file, managed):
         install(settings_file)

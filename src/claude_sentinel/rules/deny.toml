@@ -90,121 +90,161 @@ name = "xargs-pkill-killall"
 command_regex = '''^\s*xargs\s+(pkill|killall)(\s|$)'''
 
 # --- Sensitive Path Deny Rules (shared by Read, Write, Edit, MultiEdit) ---
+#
+# path_regex guards the paths the hook actually sees (outside-cwd reads,
+# `.claude/` files, and the `sed -i` backdoor check). The PermissionRequest
+# hook never fires for tool calls auto-approved by a settings.json allow
+# rule, so in-project files can only be protected by permissions.deny
+# entries: path_glob is the gitignore-style equivalent of path_regex that
+# the installer expands into Read/Write/Edit/MultiEdit deny entries.
+# Globs cannot express negative lookarounds, so a glob may over-match its
+# regex (e.g. `**/*.pem` also denies `*.pub.pem`) — erring toward deny.
 
 # --- Environment / Config Files ---
 
 [[sensitive_path_rules]]
 name = "env-files"
 path_regex = '''(^|/)\.env(\..+)?$'''
+path_glob = ["**/.env", "**/.env.*"]
 
 [[sensitive_path_rules]]
 name = "envrc"
 path_regex = '''(^|/)\.envrc$'''
+path_glob = ["**/.envrc"]
 
 [[sensitive_path_rules]]
 name = "secrets-files"
 path_regex = '''(^|/)secrets\.(yml|yaml|json|toml)$'''
+path_glob = ["**/secrets.yml", "**/secrets.yaml", "**/secrets.json", "**/secrets.toml"]
 
 [[sensitive_path_rules]]
 name = "terraform-vars"
 path_regex = '''(^|/)terraform\.tfvars(\.json)?$'''
+path_glob = ["**/terraform.tfvars", "**/terraform.tfvars.json"]
 
 # --- SSH / Crypto Keys ---
 
 [[sensitive_path_rules]]
 name = "ssh-dir"
 path_regex = '''(^|/)\.ssh/'''
+path_glob = ["**/.ssh/**"]
 
 [[sensitive_path_rules]]
 name = "gnupg-dir"
 path_regex = '''(^|/)\.gnupg/'''
+path_glob = ["**/.gnupg/**"]
 
 [[sensitive_path_rules]]
 name = "private-key-files"
 path_regex = '''(?<!\bpub)\.(pem|key)$'''
+path_glob = ["**/*.pem", "**/*.key"]
 
 [[sensitive_path_rules]]
 name = "keystore-files"
 path_regex = '''\.(p12|pfx|jks|keystore)$'''
+path_glob = ["**/*.p12", "**/*.pfx", "**/*.jks", "**/*.keystore"]
 
 # --- Cloud Provider Credentials ---
 
 [[sensitive_path_rules]]
 name = "aws-dir"
 path_regex = '''(^|/)\.aws/'''
+path_glob = ["**/.aws/**"]
 
 [[sensitive_path_rules]]
 name = "gcloud-dir"
 path_regex = '''(^|/)\.config/gcloud/'''
+path_glob = ["**/.config/gcloud/**"]
 
 [[sensitive_path_rules]]
 name = "azure-dir"
 path_regex = '''(^|/)\.azure/'''
+path_glob = ["**/.azure/**"]
 
 [[sensitive_path_rules]]
 name = "credentials-json"
 path_regex = '''(^|/)(credentials|client_secret|service[-_]account[^/]*)\.json$'''
+path_glob = [
+  "**/credentials.json",
+  "**/client_secret.json",
+  "**/service-account*.json",
+  "**/service_account*.json",
+]
 
 [[sensitive_path_rules]]
 name = "terraform-rc"
 path_regex = '''(^|/)\.terraformrc$'''
+path_glob = ["**/.terraformrc"]
 
 # --- Container / Orchestration ---
 
 [[sensitive_path_rules]]
 name = "docker-config"
 path_regex = '''(^|/)\.docker/config\.json$'''
+path_glob = ["**/.docker/config.json"]
 
 [[sensitive_path_rules]]
 name = "kube-config"
 path_regex = '''(^|/)\.kube/config$'''
+path_glob = ["**/.kube/config"]
 
 # --- Package Manager / Dev Tool Auth ---
 
 [[sensitive_path_rules]]
 name = "netrc"
 path_regex = '''(^|/)\.netrc$'''
+path_glob = ["**/.netrc"]
 
 [[sensitive_path_rules]]
 name = "npmrc"
 path_regex = '''(^|/)\.npmrc$'''
+path_glob = ["**/.npmrc"]
 
 [[sensitive_path_rules]]
 name = "pypirc"
 path_regex = '''(^|/)\.pypirc$'''
+path_glob = ["**/.pypirc"]
 
 [[sensitive_path_rules]]
 name = "gh-hosts"
 path_regex = '''(^|/)\.config/gh/hosts\.yml$'''
+path_glob = ["**/.config/gh/hosts.yml"]
 
 [[sensitive_path_rules]]
 name = "maven-settings"
 path_regex = '''(^|/)\.m2/settings\.xml$'''
+path_glob = ["**/.m2/settings.xml"]
 
 [[sensitive_path_rules]]
 name = "gradle-properties"
 path_regex = '''(^|/)\.gradle/gradle\.properties$'''
+path_glob = ["**/.gradle/gradle.properties"]
 
 [[sensitive_path_rules]]
 name = "boto-config"
 path_regex = '''(^|/)\.(boto|s3cfg)$'''
+path_glob = ["**/.boto", "**/.s3cfg"]
 
 # --- Database ---
 
 [[sensitive_path_rules]]
 name = "pgpass"
 path_regex = '''(^|/)\.pgpass$'''
+path_glob = ["**/.pgpass"]
 
 [[sensitive_path_rules]]
 name = "mycnf"
 path_regex = '''(^|/)\.my\.cnf$'''
+path_glob = ["**/.my.cnf"]
 
 # --- Other ---
 
 [[sensitive_path_rules]]
 name = "htpasswd"
 path_regex = '''(^|/)\.htpasswd$'''
+path_glob = ["**/.htpasswd"]
 
 [[sensitive_path_rules]]
 name = "vault-token"
 path_regex = '''(^|/)\.vault-token$'''
+path_glob = ["**/.vault-token"]
