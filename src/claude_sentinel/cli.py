@@ -163,6 +163,7 @@ def _run_rules(args: argparse.Namespace) -> None:
                                 "type": "sensitive-path",
                                 "name": rule.name,
                                 "pattern": rule.pattern.pattern,
+                                "path_glob": list(rule.path_globs),
                             }
                         )
                     )

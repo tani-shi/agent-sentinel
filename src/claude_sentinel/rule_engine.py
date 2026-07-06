@@ -15,6 +15,7 @@ from claude_sentinel.command_normalizer import normalize_for_matching
 class Rule:
     name: str
     pattern: re.Pattern[str]
+    path_globs: tuple[str, ...] = ()
 
 
 @dataclass
@@ -41,18 +42,39 @@ def _parse_rules(data: dict[str, Any], *, kind: str) -> RuleSet:
     """
     ruleset = RuleSet()
     flags = re.MULTILINE if kind == "deny" else 0
+    fragments = data.get("fragments", {})
     for entry in data.get("rules", []):
         ruleset.command_rules.append(
             Rule(
                 name=entry["name"],
-                pattern=re.compile(entry["command_regex"], flags),
+                pattern=re.compile(_expand_fragments(entry["command_regex"], fragments), flags),
             )
         )
     for entry in data.get("sensitive_path_rules", []):
         ruleset.sensitive_path_rules.append(
-            Rule(name=entry["name"], pattern=re.compile(entry["path_regex"]))
+            Rule(
+                name=entry["name"],
+                pattern=re.compile(entry["path_regex"]),
+                path_globs=tuple(entry.get("path_glob", [])),
+            )
         )
     return ruleset
+
+
+def _expand_fragments(regex: str, fragments: dict[str, str]) -> str:
+    """Substitute ``@name@`` tokens with shared regex fragments.
+
+    Plain string replacement rather than ``str.format`` so literal ``{n,m}``
+    quantifiers in patterns are left untouched.
+    """
+    for name, value in fragments.items():
+        regex = regex.replace(f"@{name}@", value)
+    return regex
+
+
+def sensitive_path_globs() -> list[str]:
+    """Gitignore-style glob equivalents of the sensitive path rules."""
+    return [glob for rule in get_deny_rules().sensitive_path_rules for glob in rule.path_globs]
 
 
 def load_rules(path: str | None = None, *, kind: str = "deny") -> RuleSet:

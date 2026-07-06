@@ -6,7 +6,8 @@ import json
 import shutil
 from pathlib import Path
 
-from claude_sentinel.evaluator import ASK_TOOLS, AUTO_ALLOW_TOOLS
+from claude_sentinel import rule_engine
+from claude_sentinel.evaluator import ASK_TOOLS, AUTO_ALLOW_TOOLS, FILE_TOOLS
 
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
@@ -23,15 +24,20 @@ HOOK_ENTRIES = [
 ]
 
 
-# Tools evaluated by the hook (not in AUTO_ALLOW_TOOLS) but allowed in settings.json.
-HOOK_EVALUATED_ALLOW_TOOLS = {"Read", "Write", "Edit", "MultiEdit"}
-
-
 def _get_managed_permissions() -> dict[str, list[str]]:
-    """Get managed permission entries from rules and evaluator."""
+    """Get managed permission entries from rules and evaluator.
+
+    File tools are blanket-allowed so ordinary in-project edits never
+    prompt. An allow-rule match auto-approves the call without firing the
+    PermissionRequest hook, so the hook's sensitive-path evaluation cannot
+    protect these tools; the generated permissions.deny entries are what
+    guards sensitive paths (deny rules are evaluated before allow rules).
+    """
     return {
-        "deny": [],
-        "allow": sorted(AUTO_ALLOW_TOOLS | HOOK_EVALUATED_ALLOW_TOOLS),
+        "deny": sorted(
+            f"{tool}({glob})" for tool in FILE_TOOLS for glob in rule_engine.sensitive_path_globs()
+        ),
+        "allow": sorted(AUTO_ALLOW_TOOLS | FILE_TOOLS),
         "ask": sorted(ASK_TOOLS),
     }
 
