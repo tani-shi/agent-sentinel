@@ -9,6 +9,7 @@ log records) so the two stay in sync.
 
 from __future__ import annotations
 
+import re
 import shlex
 from typing import NamedTuple
 
@@ -223,22 +224,117 @@ _KNOWN_PREFIX_OPTIONS: dict[str, list[_OptionSpec]] = {
 }
 
 
+# Leading tokens that wrap a real command without changing what it does, but
+# defeat start-anchored rules: `!` negation, loop/conditional body keywords,
+# and single-token command runners (command/exec/builtin/time/nohup). Stripping
+# them exposes the underlying command (`! kill` -> `kill`, `nohup watch` ->
+# `watch`) so anchored ASK/DENY rules match. Only argument-free runners are
+# listed: `env`/`timeout` take their own args before the command and cannot be
+# stripped by a plain leading-token rule. Condition keywords (while/until/for/
+# if/case) and body-less keywords (done/fi/esac) are intentionally excluded.
+_WRAPPER_PREFIXES: frozenset[str] = frozenset(
+    {"!", "do", "then", "else", "command", "exec", "builtin", "time", "nohup"}
+)
+
+
 def get_multi_token_commands() -> frozenset[str]:
     """Multi-token command names shared with analyzer for grouping."""
     return _MULTI_TOKEN_COMMANDS
 
 
-def normalize_for_matching(command: str) -> str:
-    """Strip per-command prefix options for rule matching.
+def _strip_wrapper_prefixes(command: str) -> str:
+    """Drop leading wrapper tokens so start-anchored rules see the real command."""
+    s = command.lstrip()
+    changed = False
+    while True:
+        parts = s.split(None, 1)
+        if len(parts) < 2 or parts[0] not in _WRAPPER_PREFIXES:
+            break
+        s = parts[1].lstrip()
+        changed = True
+    return s if changed else command
+
+
+# Command runners that prefix and then exec another command, consuming their
+# own leading options/args first. Stripping them exposes the wrapped command to
+# start-anchored rules (`env sudo ...` -> `sudo ...`, `timeout 5 kill -9 -1` ->
+# `kill -9 -1`). Unlike _WRAPPER_PREFIXES these take arguments, so each carries
+# the set of leading flags that consume a following value.
+_RUNNER_VALUE_FLAGS: dict[str, frozenset[str]] = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "--class", "-n", "--classdata", "-p", "--pid"}),
+    "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
+}
+_DURATION = re.compile(r"\d+(\.\d+)?[smhd]?")
+
+
+def _skip_runner_args(tokens: list[str], i: int) -> int:
+    """``tokens[i]`` is a runner name; return the index of the wrapped command
+    after consuming that runner's own assignments/options."""
+    runner = tokens[i]
+    value_flags = _RUNNER_VALUE_FLAGS[runner]
+    i += 1
+    duration_seen = False
+    while i < len(tokens):
+        tok = tokens[i]
+        if runner == "env" and re.fullmatch(r"\w+=.*", tok):
+            i += 1
+            continue
+        if tok == "--":
+            return i + 1
+        if tok.startswith(("-", "+")):
+            i += 1
+            if tok in value_flags and i < len(tokens):
+                i += 1
+            continue
+        if runner == "timeout" and not duration_seen and _DURATION.fullmatch(tok):
+            duration_seen = True
+            i += 1
+            continue
+        break
+    return i
+
+
+def drop_leading_runners(tokens: list[str]) -> list[str]:
+    """Drop leading wrapper prefixes (`!`/`do`/`exec`/…) and arg-taking command
+    runners (`env`/`timeout`/`nice`/`ionice`/`stdbuf`), returning the wrapped
+    command's tokens. Token-level so a dequoted script argument stays intact."""
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in _WRAPPER_PREFIXES:
+            i += 1
+        elif tok in _RUNNER_VALUE_FLAGS:
+            i = _skip_runner_args(tokens, i)
+        else:
+            break
+    return tokens[i:]
+
+
+def _strip_command_runners(command: str) -> str:
+    """String form of :func:`drop_leading_runners` for rule matching
+    (`env sudo ...` -> `sudo ...`). Quote loss from the shlex round-trip is
+    acceptable here because the result is only regex-matched, never executed."""
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return command
+    rest = drop_leading_runners(tokens)
+    if not rest or len(rest) == len(tokens):
+        return command
+    return " ".join(rest)
+
+
+def _strip_prefix_options(command: str) -> str:
+    """Strip per-command prefix options between a program and its subcommand.
 
     ``git -c color.ui=never diff`` becomes ``git diff`` so the existing
-    ``git-status`` allow-rule pattern (which only knows about ``-C``) can
-    still match.
-
-    Returns the original string when stripping is unsafe or unnecessary:
+    ``git-status`` allow-rule pattern (which only knows about ``-C``) can still
+    match. Returns the input unchanged when stripping is unsafe or unnecessary:
     program not whitelisted, malformed bash, unknown option encountered,
-    value-taking option without a value, or no prefix options actually
-    present (idempotent).
+    value-taking option without a value, or no prefix options present.
     """
     s = command.lstrip()
     if not s:
@@ -289,13 +385,22 @@ def normalize_for_matching(command: str) -> str:
         out.extend(tokens[i:])
         break
 
-    if not stripped_any:
-        return command
-    if len(out) == 1:
-        # Only options were present, no subcommand reached. Don't reduce
-        # the command to its bare program name — that would lose context.
+    only_program_name_remains = len(out) == 1
+    if not stripped_any or only_program_name_remains:
         return command
     return " ".join(out)
+
+
+def normalize_for_matching(command: str) -> str:
+    """Normalize a command for rule matching.
+
+    Strips leading wrapper tokens (``! kill``, ``do rm -rf x``) and command
+    runners (``env sudo ...`` -> ``sudo ...``) so start-anchored rules see the
+    real command, then strips per-command prefix options (``git -c x=y diff``
+    -> ``git diff``). Each pass returns its input unchanged when nothing
+    applies, so an already-plain command is returned as-is.
+    """
+    return _strip_prefix_options(_strip_command_runners(_strip_wrapper_prefixes(command)))
 
 
 def normalize_for_analysis(command: str) -> str | None:

@@ -98,6 +98,44 @@ class TestNormalizeForMatching:
     def test_unparseable_bash(self):
         assert normalize_for_matching("git 'unterminated") == "git 'unterminated"
 
+    def test_strips_negation_prefix(self):
+        assert normalize_for_matching("! kill -0 1") == "kill -0 1"
+
+    def test_strips_loop_body_keyword(self):
+        assert normalize_for_matching('do rm -rf "$x"') == 'rm -rf "$x"'
+        assert normalize_for_matching("then git push --force") == "git push --force"
+        assert normalize_for_matching("else rm -rf /") == "rm -rf /"
+
+    def test_strips_command_wrapper(self):
+        assert normalize_for_matching("exec rm -rf /") == "rm -rf /"
+        assert normalize_for_matching("command git status") == "git status"
+        assert normalize_for_matching("builtin rm -rf /") == "rm -rf /"
+        assert normalize_for_matching("nohup watch -n1 ls") == "watch -n1 ls"
+        assert normalize_for_matching("time while true") == "while true"
+
+    def test_strips_stacked_wrappers(self):
+        assert normalize_for_matching("do ! kill 1") == "kill 1"
+
+    def test_strip_then_option_normalization(self):
+        assert normalize_for_matching("do git -C /tmp status") == "git status"
+
+    def test_condition_keywords_not_stripped(self):
+        assert normalize_for_matching("until ! pgrep foo") == "until ! pgrep foo"
+        assert normalize_for_matching("while true") == "while true"
+
+    def test_strips_command_runners(self):
+        assert normalize_for_matching("env sudo apt install x") == "sudo apt install x"
+        assert normalize_for_matching("env FOO=bar sudo apt") == "sudo apt"
+        assert normalize_for_matching("env -u PATH sudo apt") == "sudo apt"
+        assert normalize_for_matching("timeout 60 kill -9 -1") == "kill -9 -1"
+        assert normalize_for_matching("timeout -s TERM 5 sudo rm") == "sudo rm"
+        assert normalize_for_matching("nice sudo apt") == "sudo apt"
+        assert normalize_for_matching("stdbuf -oL gh pr comment 1") == "gh pr comment 1"
+
+    def test_command_runner_not_present_unchanged(self):
+        assert normalize_for_matching("sudo apt install x") == "sudo apt install x"
+        assert normalize_for_matching("ls -la") == "ls -la"
+
 
 class TestNormalizeForAnalysis:
     def test_git_c_config_groups_by_subcommand(self):

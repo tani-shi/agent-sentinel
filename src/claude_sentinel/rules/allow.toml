@@ -38,13 +38,17 @@ command_regex = '''^\s*find\s+'''
 name = "grep"
 command_regex = '''^\s*(grep|rg|ag)\s+'''
 
+# while/until are denied (unbounded loops); C-style `for (( ))` is denied in
+# deny.toml. Only a `for` over a literal list is allowed here — a `for` whose
+# iterator is a command substitution (`$(...)`/backticks) is left unmatched so
+# it reaches the LLM judge, which denies unbounded/side-effecting fan-out.
 [[rules]]
 name = "shell-constructs"
-command_regex = '''^\s*(for|while|if|case|do|done|then|else|elif|fi|esac)(\s|$)'''
+command_regex = '''^\s*(if|case|do|done|then|else|elif|fi|esac)(\s|$)'''
 
 [[rules]]
-name = "until"
-command_regex = '''^\s*until(\s|$)'''
+name = "for-list"
+command_regex = '''^\s*for\s+\w+\s+in\s+(?![^\n]*(?:\$\(|`))'''
 
 [[rules]]
 name = "pushd-popd"
@@ -89,9 +93,12 @@ command_regex = '''^\s*export\s+'''
 name = "test-bracket"
 command_regex = '''^\s*(\[|test)\s+'''
 
+# `env <cmd>` is normalized to `<cmd>`, so the wrapped command is judged on its
+# own merits (`env sudo ...` -> deny, `env python x` -> allow via python rule).
+# Only read-only `printenv` is auto-allowed here.
 [[rules]]
-name = "env-printenv"
-command_regex = '''^\s*(env|printenv)\s*'''
+name = "printenv"
+command_regex = '''^\s*printenv(\s|$)'''
 
 [[rules]]
 name = "sleep"
@@ -151,7 +158,7 @@ command_regex = '''^\s*(sed|awk)\s+'''
 
 [[rules]]
 name = "sort-uniq-cut"
-command_regex = '''^\s*(sort|uniq|cut|tr|tee|xargs)\s*'''
+command_regex = '''^\s*(sort|uniq|cut|tr|tee)\s*'''
 
 [[rules]]
 name = "jq"

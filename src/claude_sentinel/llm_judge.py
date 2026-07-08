@@ -42,8 +42,9 @@ async def _evaluate_sdk(prompt: str) -> tuple[str, str]:
 def evaluate(command: str, cwd: str) -> tuple[str, str]:
     """Evaluate a command using the LLM judge.
 
-    Returns:
-        (decision, reason) where decision is "allow", "deny", or "ask"
+    Returns (decision, reason) where decision is "allow", "deny", or "ask".
+    Clearly dangerous commands are denied; commands needing human judgment are
+    asked. A timeout or error falls back to "ask" so the human decides.
     """
     prompt = _load_prompt_template().format(command=command, cwd=cwd)
     last_error = ""
@@ -60,7 +61,10 @@ def evaluate(command: str, cwd: str) -> tuple[str, str]:
 
 
 def _parse_response(output: str) -> tuple[str, str]:
-    """Parse the LLM response into (decision, reason)."""
+    """Parse the LLM response into (decision, reason).
+
+    An empty or unexpected response falls back to "ask" so the human decides.
+    """
     if not output:
         return "ask", "Empty LLM response"
 

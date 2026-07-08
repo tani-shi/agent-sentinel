@@ -38,6 +38,93 @@ class TestDenyRules:
     def test_fork_bomb(self):
         assert match_deny(":(){ :|:& };:") is not None
 
+    def test_busy_wait_noop(self):
+        assert match_deny("do :") is not None
+        assert match_deny("do true") is not None
+        assert match_deny("do continue") is not None
+        assert match_deny("do : ") is not None
+
+    def test_busy_wait_noop_no_false_positive(self):
+        assert match_deny("do sleep 2") is None
+        assert match_deny("do docker ps") is None
+        assert match_deny(":") is None
+        assert match_deny("true") is None
+
+    def test_while_loop_denied(self):
+        assert match_deny("while true") is not None
+        assert match_deny("while read line") is not None
+        assert match_deny("while [ $x -lt 5 ]") is not None
+
+    def test_until_loop_denied(self):
+        assert match_deny("until false") is not None
+        assert match_deny("until ! pgrep -f foo") is not None
+
+    def test_for_cstyle_denied(self):
+        assert match_deny("for (( ; ; ))") is not None
+        assert match_deny("for ((i=0;i<10;i++))") is not None
+        assert match_deny("for(( ; ; ))") is not None
+
+    def test_for_list_form_not_denied(self):
+        assert match_deny("for pr in 1 2 3") is None
+        assert match_deny("for f in *.md") is None
+
+    def test_watch_denied(self):
+        assert match_deny("watch -n 1 gh pr comment 1 --body x") is not None
+        assert match_deny("watch docker ps") is not None
+
+    def test_watch_no_false_positive(self):
+        # `fswatch` and `gh ... --watch` are not the watch command.
+        assert match_deny("fswatch -r .") is None
+        assert match_deny("gh pr checks 129 --watch") is None
+
+    def test_runner_wrapped_loop_denied(self):
+        # time/nohup are stripped so the loop/watch rules still fire.
+        assert evaluate_command("nohup watch -n1 gh pr comment 1")[0] == "deny"
+        assert evaluate_command("time while true; do gh pr comment 1; done")[0] == "deny"
+
+    def test_arg_taking_runner_prefix_denied(self):
+        # env/timeout/nice consume their own args, then the wrapped command
+        # faces the anchored rules (previously env sudo -> allow bypass).
+        assert evaluate_command("env sudo apt install foo")[0] == "deny"
+        assert evaluate_command("env kill -9 -1")[0] == "deny"
+        assert evaluate_command("timeout 60 sudo rm -rf /etc")[0] == "deny"
+        assert evaluate_command("nice sudo apt update")[0] == "deny"
+        assert evaluate_command("env -u PATH sudo apt install x")[0] == "deny"
+
+    def test_runner_prefix_benign_still_allowed(self):
+        assert evaluate_command("env FOO=bar npm run build")[0] == "allow"
+        assert evaluate_command("timeout 30 npm test")[0] == "allow"
+        assert evaluate_command("printenv PATH")[0] == "allow"
+
+    def test_runner_wrapped_bash_c_loop_denied_extra(self):
+        assert evaluate_command('env bash -c "while true; do gh pr comment 1; done"')[0] == "deny"
+        assert evaluate_command('timeout 999999 bash -c "while true; do :; done"')[0] == "deny"
+
+    def test_eval_inline_script_evaluated(self):
+        assert evaluate_command('eval "while true; do gh pr comment 1; done"')[0] == "deny"
+        assert evaluate_command('eval "rm -rf /"')[0] == "deny"
+
+    def test_bash_c_unparseable_inner_not_allowed(self):
+        # An inner script our splitter can't parse must not be auto-allowed via
+        # the permissive bash rule; it goes to the deny prefilter + LLM.
+        assert evaluate_command('bash -c "case $x in a) rm -rf /;; esac"')[0] != "allow"
+
+    def test_for_computed_iterator_not_allowed(self):
+        # A for-loop over a command-substitution iterator is left for the LLM
+        # judge (unbounded side-effect risk), not auto-allowed.
+        cmd = "for i in $(seq 1 100000); do curl http://x/$i; done"
+        assert evaluate_command(cmd)[0] != "allow"
+
+    def test_for_literal_list_still_allowed(self):
+        assert evaluate_command("for f in *.txt; do echo $f; done")[0] == "allow"
+        assert evaluate_command("for pr in 1 2 3; do gh pr view $pr; done")[0] == "allow"
+
+    def test_loop_keywords_in_heredoc_body_not_denied(self):
+        commit = 'git commit -m "$(cat <<EOF\nwhile loop removed from poller\nEOF\n)"'
+        assert evaluate_command(commit)[0] != "deny"
+        pr = 'gh pr create --body "$(cat <<EOF\nretry until healthy\nEOF\n)"'
+        assert evaluate_command(pr)[0] != "deny"
+
     def test_mkfs(self):
         assert match_deny("mkfs.ext4 /dev/sda1") is not None
         assert match_deny("mkfs /dev/sda") is not None
@@ -323,9 +410,6 @@ class TestAllowRules:
         assert match_allow("dotnet ef database update") is None
         assert match_allow("dotnet nuget push pkg.nupkg") is None
         assert match_allow("dotnet tool install -g foo") is None
-
-    def test_until(self):
-        assert match_allow("until ! pgrep -f foo; do sleep 5; done") is not None
 
     def test_docker(self):
         assert match_allow("docker build .") is not None
@@ -1274,7 +1358,9 @@ class TestAllowRulesNarrowed:
         # command substitution is evaluated independently.
         assert match_allow("export FOO=bar") is not None
         assert match_allow("export LC_ALL=C") is not None
-        assert match_allow("env") is not None
+        # Bare `env` is no longer blanket-allowed (it dumps the environment,
+        # secrets included); `env <cmd>` is judged by the wrapped command.
+        assert match_allow("env") is None
         assert match_allow("printenv") is not None
 
     def test_osascript_not_allowed(self):
@@ -1832,3 +1918,67 @@ class TestEvaluateCommand:
         )
         decision, _ = evaluate_command(cmd)
         assert decision == "allow"
+
+    # --- unbounded loops are denied ---
+
+    def test_while_loop_command_denied(self):
+        decision, reason = evaluate_command("while true; do gh pr comment 1 --body x; done")
+        assert decision == "deny"
+        assert "while-loop" in reason
+
+    def test_until_polling_denied(self):
+        # Even throttled polls are denied: an approval cannot bound iterations.
+        cmd = (
+            "until docker exec shiro-db mysqladmin ping --silent 2>/dev/null "
+            "| grep -q alive; do sleep 2; done"
+        )
+        assert evaluate_command(cmd)[0] == "deny"
+
+    def test_cstyle_for_denied(self):
+        decision, _ = evaluate_command("for (( ; ; )); do gh pr comment 1 --body x; done")
+        assert decision == "deny"
+        # Unparseable C-style form still caught by the whole-string prefilter.
+        assert evaluate_command("for ((i=0;;i++)); do gh pr comment 1; done")[0] == "deny"
+
+    def test_list_form_for_still_allowed(self):
+        assert evaluate_command("for pr in 1 2 3; do gh pr view $pr; done")[0] == "allow"
+
+    def test_loop_hidden_in_bash_c_denied(self):
+        # The -c script is evaluated, so the loop inside it is denied — not
+        # auto-allowed by the permissive `bash ...` rule.
+        assert evaluate_command('bash -c "while true; do gh pr comment 1; done"')[0] == "deny"
+        assert evaluate_command("sh -c 'until false; do gh pr comment 1; done'")[0] == "deny"
+        assert evaluate_command('bash -euo pipefail -c "while true; do :; done"')[0] == "deny"
+
+    def test_runner_wrapped_bash_c_loop_denied(self):
+        # A wrapper/runner prefix before `bash -c` must not re-hide the loop.
+        assert evaluate_command("exec bash -c 'while true; do :; done'")[0] == "deny"
+        assert evaluate_command("nohup bash -c 'until false; do :; done' &")[0] == "deny"
+
+    def test_bash_c_benign_script_still_allowed(self):
+        assert evaluate_command('bash -c "npm run build"')[0] == "allow"
+
+    def test_bash_c_mutation_script_asks(self):
+        assert evaluate_command('bash -c "gh pr comment 1 --body x"')[0] == "ask"
+
+    def test_busy_wait_noop_via_for_loop_denied(self):
+        # busy-wait-noop still fires for a no-op body under an allowed for-loop.
+        decision, reason = evaluate_command("for x in 1; do :; done")
+        assert decision == "deny"
+        assert "busy-wait-noop" in reason
+
+    def test_reported_busy_wait_incident_denied(self):
+        cmd = "until [ -f /dev/null ] && ! kill -0 1 2>/dev/null; do :; done 2>/dev/null; true"
+        decision, _ = evaluate_command(cmd)
+        assert decision == "deny"
+
+    # --- Anchored-rule bypass closing (! negation, loop-body prefix) ---
+
+    def test_negated_kill_asks(self):
+        assert match_ask("! kill -0 1") is not None
+
+    def test_negated_rm_rf_root_denied(self):
+        assert match_deny("! rm -rf /") is not None
+
+    def test_loop_body_rm_recursive_asks(self):
+        assert match_ask('do rm -rf "$x"') is not None
