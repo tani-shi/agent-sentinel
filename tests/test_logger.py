@@ -21,7 +21,7 @@ def log_dir(tmp_path):
 
 def _make_hook_input(command="ls -la", tool_name="Bash", session_id="sess1", cwd="/tmp"):
     hi = {
-        "hook_event_name": "PermissionRequest",
+        "hook_event_name": "PreToolUse",
         "tool_name": tool_name,
         "tool_input": {"command": command} if tool_name == "Bash" else {"file_path": command},
         "session_id": session_id,

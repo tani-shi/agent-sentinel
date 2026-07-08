@@ -198,7 +198,7 @@ def _run_test(command: str, *, explain: bool = False) -> None:
     import os
 
     hook_input = {
-        "hook_event_name": "PermissionRequest",
+        "hook_event_name": "PreToolUse",
         "tool_name": "Bash",
         "tool_input": {"command": command},
         "session_id": "test",

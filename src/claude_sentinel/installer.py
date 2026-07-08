@@ -11,6 +11,16 @@ from claude_sentinel.evaluator import ASK_TOOLS, AUTO_ALLOW_TOOLS, FILE_TOOLS
 
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
+HOOK_EVENT = "PreToolUse"
+# Removed on install so upgrading from the pre-PreToolUse layout leaves no
+# stale hook firing in parallel.
+LEGACY_HOOK_EVENTS = ["PermissionRequest"]
+
+# File tools no longer known to Claude Code. Their permission entries are
+# stripped on install so a stale MultiEdit(...) deny/allow left by an earlier
+# version stops triggering "matches no known tool" warnings.
+LEGACY_FILE_TOOLS = ["MultiEdit"]
+
 HOOK_ENTRIES = [
     {
         "matcher": "*",
@@ -27,11 +37,12 @@ HOOK_ENTRIES = [
 def _get_managed_permissions() -> dict[str, list[str]]:
     """Get managed permission entries from rules and evaluator.
 
-    File tools are blanket-allowed so ordinary in-project edits never
-    prompt. An allow-rule match auto-approves the call without firing the
-    PermissionRequest hook, so the hook's sensitive-path evaluation cannot
-    protect these tools; the generated permissions.deny entries are what
-    guards sensitive paths (deny rules are evaluated before allow rules).
+    File tools are blanket-allowed so ordinary in-project edits never prompt.
+    The PreToolUse hook fires on every tool call, so its sensitive-path
+    evaluation now sees these too, but the generated permissions.deny entries
+    are kept as defense-in-depth: deny rules are evaluated before allow rules
+    and before the hook, and they still guard sensitive paths on the sub-agent
+    and background paths where the hook is not guaranteed to fire.
     """
     return {
         "deny": sorted(
@@ -56,15 +67,21 @@ def install(settings_path: Path | None = None) -> str:
         backup = path.with_suffix(".json.bak")
         shutil.copy2(path, backup)
 
+    # Strip permission entries for tools Claude Code no longer knows.
+    legacy_perm_removed = _remove_legacy_file_tools(settings)
+
     # Merge permissions
     managed = _get_managed_permissions()
     perm_added = {}
     for key in ("deny", "allow", "ask"):
         perm_added[key] = _merge_permissions(settings, key, managed[key])
 
+    # Drop any hook left by an earlier layout so it does not fire in parallel.
+    legacy_removed = any(_remove_hook(settings, event) for event in LEGACY_HOOK_EVENTS)
+
     # Merge hooks
     hooks = settings.setdefault("hooks", {})
-    existing = hooks.get("PermissionRequest", [])
+    existing = hooks.get(HOOK_EVENT, [])
     hooks_installed = not any(
         hook.get("command") == "claude-sentinel"
         for entry in existing
@@ -72,11 +89,16 @@ def install(settings_path: Path | None = None) -> str:
     )
     if hooks_installed:
         existing.extend(HOOK_ENTRIES)
-        hooks["PermissionRequest"] = existing
+        hooks[HOOK_EVENT] = existing
 
     _save_settings(path, settings)
 
-    any_changes = hooks_installed or any(v > 0 for v in perm_added.values())
+    any_changes = (
+        hooks_installed
+        or legacy_removed
+        or legacy_perm_removed
+        or any(v > 0 for v in perm_added.values())
+    )
     if not any_changes:
         return f"claude-sentinel is already up to date in {path}"
 
@@ -127,20 +149,10 @@ def uninstall(settings_path: Path | None = None) -> str:
     if "permissions" in settings and not settings["permissions"]:
         del settings["permissions"]
 
-    # Remove hooks
-    hooks = settings.get("hooks", {})
-    existing = hooks.get("PermissionRequest", [])
-    filtered = [
-        entry
-        for entry in existing
-        if not any(hook.get("command") == "claude-sentinel" for hook in entry.get("hooks", []))
-    ]
-    hooks_removed = len(filtered) != len(existing)
-    if hooks_removed:
-        if filtered:
-            hooks["PermissionRequest"] = filtered
-        else:
-            del hooks["PermissionRequest"]
+    # Remove hooks (including any left by an earlier layout)
+    hooks_removed = any(
+        _remove_hook(settings, event) for event in (HOOK_EVENT, *LEGACY_HOOK_EVENTS)
+    )
 
     any_changes = hooks_removed or any(v > 0 for v in perm_removed.values())
     if not any_changes:
@@ -165,6 +177,36 @@ def uninstall(settings_path: Path | None = None) -> str:
             lines.append(f"  permissions.{key}: not found")
 
     return "\n".join(lines)
+
+
+def _remove_hook(settings: dict, event: str) -> bool:
+    """Remove claude-sentinel entries from hooks[event]. Returns True if any removed."""
+    hooks = settings.get("hooks", {})
+    existing = hooks.get(event)
+    if not existing:
+        return False
+    filtered = [
+        entry
+        for entry in existing
+        if not any(hook.get("command") == "claude-sentinel" for hook in entry.get("hooks", []))
+    ]
+    if len(filtered) == len(existing):
+        return False
+    if filtered:
+        hooks[event] = filtered
+    else:
+        del hooks[event]
+    return True
+
+
+def _remove_legacy_file_tools(settings: dict) -> bool:
+    """Remove permission entries for tools in LEGACY_FILE_TOOLS. Returns True if any removed."""
+    globs = rule_engine.sensitive_path_globs()
+    removed = 0
+    for tool in LEGACY_FILE_TOOLS:
+        removed += _remove_permissions(settings, "deny", [f"{tool}({glob})" for glob in globs])
+        removed += _remove_permissions(settings, "allow", [tool])
+    return removed > 0
 
 
 def _merge_permissions(settings: dict, key: str, entries: list[str]) -> int:

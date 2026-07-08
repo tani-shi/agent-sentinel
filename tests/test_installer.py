@@ -29,12 +29,51 @@ class TestInstall:
         assert "rules added" in msg
 
         settings = json.loads(settings_file.read_text())
-        assert "PermissionRequest" in settings["hooks"]
-        assert "PreToolUse" not in settings["hooks"]
+        assert "PreToolUse" in settings["hooks"]
+        assert "PermissionRequest" not in settings["hooks"]
 
-        entries = settings["hooks"]["PermissionRequest"]
+        entries = settings["hooks"]["PreToolUse"]
         assert len(entries) == 1
         assert entries[0]["hooks"][0]["command"] == "claude-sentinel"
+
+    def test_install_migrates_legacy_permissionrequest_hook(self, settings_file):
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PermissionRequest": [
+                            {
+                                "matcher": "*",
+                                "hooks": [{"type": "command", "command": "claude-sentinel"}],
+                            }
+                        ]
+                    }
+                }
+            )
+        )
+        install(settings_file)
+
+        settings = json.loads(settings_file.read_text())
+        assert "PermissionRequest" not in settings["hooks"]
+        assert len(settings["hooks"]["PreToolUse"]) == 1
+        assert settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "claude-sentinel"
+
+    def test_install_strips_legacy_multiedit_permissions(self, settings_file):
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "permissions": {
+                        "deny": ["MultiEdit(**/.env)", "MultiEdit(**/.ssh/**)"],
+                        "allow": ["MultiEdit"],
+                    }
+                }
+            )
+        )
+        install(settings_file)
+
+        settings = json.loads(settings_file.read_text())
+        assert not any(e.startswith("MultiEdit(") for e in settings["permissions"]["deny"])
+        assert "MultiEdit" not in settings["permissions"]["allow"]
 
     def test_install_malformed_settings(self, settings_file):
         settings_file.write_text("{not valid json")
@@ -57,7 +96,7 @@ class TestInstall:
         assert "already up to date" in msg
 
         settings = json.loads(settings_file.read_text())
-        assert len(settings["hooks"]["PermissionRequest"]) == 1
+        assert len(settings["hooks"]["PreToolUse"]) == 1
 
     def test_install_creates_backup(self, settings_file):
         settings_file.write_text(json.dumps({"existing": True}))
@@ -71,13 +110,14 @@ class TestInstall:
 
 class TestInstallPermissions:
     def test_install_adds_sensitive_path_deny(self, settings_file, managed):
-        """Blanket-allowed file tools bypass the PermissionRequest hook, so
-        sensitive paths must be denied via settings.json permission rules."""
+        """Sensitive paths are denied via settings.json permission rules as
+        defense-in-depth for the sub-agent/background paths where the hook is
+        not guaranteed to fire."""
         install(settings_file)
         settings = json.loads(settings_file.read_text())
         deny = settings["permissions"]["deny"]
         assert set(managed["deny"]).issubset(set(deny))
-        for tool in ("Read", "Write", "Edit", "MultiEdit"):
+        for tool in ("Read", "Write", "Edit"):
             assert f"{tool}(**/.env)" in deny
             assert f"{tool}(**/.env.*)" in deny
             assert f"{tool}(**/.ssh/**)" in deny
@@ -172,7 +212,7 @@ class TestUninstall:
         assert "rules removed" in msg
 
         settings = json.loads(settings_file.read_text())
-        assert "PermissionRequest" not in settings.get("hooks", {})
+        assert "PreToolUse" not in settings.get("hooks", {})
 
     def test_uninstall_not_installed(self, settings_file):
         settings_file.write_text(json.dumps({}))
@@ -182,7 +222,7 @@ class TestUninstall:
     def test_uninstall_preserves_other_hooks(self, settings_file):
         settings = {
             "hooks": {
-                "PermissionRequest": [
+                "PreToolUse": [
                     {"matcher": "*", "hooks": [{"type": "command", "command": "other-hook"}]},
                     {"matcher": "*", "hooks": [{"type": "command", "command": "claude-sentinel"}]},
                 ]
@@ -192,7 +232,7 @@ class TestUninstall:
         uninstall(settings_file)
 
         result = json.loads(settings_file.read_text())
-        entries = result["hooks"]["PermissionRequest"]
+        entries = result["hooks"]["PreToolUse"]
         assert len(entries) == 1
         assert entries[0]["hooks"][0]["command"] == "other-hook"
 
