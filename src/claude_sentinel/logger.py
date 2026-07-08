@@ -54,7 +54,7 @@ def log_evaluation(
         tool_input = hook_input.get("tool_input", {})
         if tool_name == "Bash":
             input_value = tool_input.get("command", "")
-        elif tool_name in ("Read", "Write", "Edit", "MultiEdit"):
+        elif tool_name in ("Read", "Write", "Edit"):
             input_value = tool_input.get("file_path", "")
         else:
             input_value = json.dumps(tool_input, ensure_ascii=False)

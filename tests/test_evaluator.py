@@ -227,7 +227,7 @@ class TestCompoundCommandRegression:
 
 
 class TestFileToolEvaluation:
-    """Read, Write, Edit, and MultiEdit share the same sensitive path rules."""
+    """Read, Write, and Edit share the same sensitive path rules."""
 
     def test_read_deny_env_file(self):
         hook_input = {
@@ -275,23 +275,6 @@ class TestFileToolEvaluation:
     def test_edit_allow_normal_file(self):
         hook_input = {
             "tool_name": "Edit",
-            "tool_input": {"file_path": "/project/src/main.py"},
-        }
-        decision, reason, stage = evaluate(hook_input)
-        assert decision == "allow"
-
-    def test_multiedit_deny_ssh_key(self):
-        hook_input = {
-            "tool_name": "MultiEdit",
-            "tool_input": {"file_path": "/home/user/.ssh/config"},
-        }
-        decision, reason, stage = evaluate(hook_input)
-        assert decision == "deny"
-        assert stage == "RULE_DENY"
-
-    def test_multiedit_allow_normal_file(self):
-        hook_input = {
-            "tool_name": "MultiEdit",
             "tool_input": {"file_path": "/project/src/main.py"},
         }
         decision, reason, stage = evaluate(hook_input)

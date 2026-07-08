@@ -1,4 +1,4 @@
-"""Hook protocol I/O for Claude Code PermissionRequest hooks."""
+"""Hook protocol I/O for Claude Code PreToolUse hooks."""
 
 from __future__ import annotations
 
@@ -19,23 +19,22 @@ def write_output(
     reason: str,
     stdout: TextIO | None = None,
 ) -> None:
-    """Write the PermissionRequest JSON response to stdout.
+    """Write the PreToolUse JSON response to stdout.
 
-    - "allow" or "deny": {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-      "decision": {"behavior": "...", "message": "..."}}}
-    - "ask": no output (passthrough, exit 0)
+    Emits {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+    "permissionDecision": "allow"|"deny"|"ask", "permissionDecisionReason": "..."}}.
+
+    "ask" is an explicit decision (forces a prompt) rather than an empty
+    passthrough: a PreToolUse "allow" no longer short-circuits the project's
+    settings.json ask/deny, and an explicit "ask" outranks any settings allow,
+    so a sentinel ask always reaches the user.
     """
     stream = stdout if stdout is not None else sys.stdout
-    if decision == "ask":
-        # Passthrough: no output, exit 0
-        return
     output = {
         "hookSpecificOutput": {
-            "hookEventName": "PermissionRequest",
-            "decision": {
-                "behavior": decision,
-                "message": reason,
-            },
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason,
         }
     }
     json.dump(output, stream)

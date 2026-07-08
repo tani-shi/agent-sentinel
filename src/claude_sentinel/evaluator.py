@@ -32,7 +32,7 @@ ASK_TOOLS = {
 }
 
 # File tools evaluated through sensitive path deny rules.
-FILE_TOOLS = {"Read", "Write", "Edit", "MultiEdit"}
+FILE_TOOLS = {"Read", "Write", "Edit"}
 
 
 def _is_auto_allowed(tool_name: str) -> bool:
@@ -89,7 +89,7 @@ def _evaluate_bash(tool_input: dict[str, Any], hook_input: dict[str, Any]) -> tu
 
 
 def _evaluate_file(tool_input: dict[str, Any]) -> tuple[str, str, str]:
-    """Evaluate a file tool (Read/Write/Edit/MultiEdit) through sensitive path rules."""
+    """Evaluate a file tool (Read/Write/Edit) through sensitive path rules."""
     file_path = tool_input.get("file_path", "")
 
     deny_match = rules.match_sensitive_path(file_path)

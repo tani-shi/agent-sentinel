@@ -20,7 +20,7 @@ def log_dir(tmp_path):
 class TestHookMode:
     def test_bash_allow(self, capsys, log_dir):
         hook_input = {
-            "hook_event_name": "PermissionRequest",
+            "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
             "tool_input": {"command": "ls -la"},
             "session_id": "test",
@@ -30,11 +30,11 @@ class TestHookMode:
             main([])
 
         output = json.loads(capsys.readouterr().out)
-        assert output["hookSpecificOutput"]["decision"]["behavior"] == "allow"
+        assert output["hookSpecificOutput"]["permissionDecision"] == "allow"
 
     def test_bash_deny(self, capsys, log_dir):
         hook_input = {
-            "hook_event_name": "PermissionRequest",
+            "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
             "tool_input": {"command": "sudo rm -rf /"},
             "session_id": "test",
@@ -44,11 +44,11 @@ class TestHookMode:
             main([])
 
         output = json.loads(capsys.readouterr().out)
-        assert output["hookSpecificOutput"]["decision"]["behavior"] == "deny"
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     def test_unknown_tool_passthrough(self, capsys, log_dir):
         hook_input = {
-            "hook_event_name": "PermissionRequest",
+            "hook_event_name": "PreToolUse",
             "tool_name": "SomeUnknownTool",
             "tool_input": {"key": "value"},
             "session_id": "test",
@@ -61,7 +61,7 @@ class TestHookMode:
 
     def test_hook_writes_log(self, log_dir):
         hook_input = {
-            "hook_event_name": "PermissionRequest",
+            "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
             "tool_input": {"command": "ls -la"},
             "session_id": "test",

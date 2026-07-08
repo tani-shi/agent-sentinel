@@ -120,14 +120,14 @@ command_regex = '''^\s*kill\s+(\S+\s+)*-1(\s|$)'''
 name = "xargs-pkill-killall"
 command_regex = '''^\s*xargs\s+(pkill|killall)(\s|$)'''
 
-# --- Sensitive Path Deny Rules (shared by Read, Write, Edit, MultiEdit) ---
+# --- Sensitive Path Deny Rules (shared by Read, Write, Edit) ---
 #
-# path_regex guards the paths the hook actually sees (outside-cwd reads,
-# `.claude/` files, and the `sed -i` backdoor check). The PermissionRequest
-# hook never fires for tool calls auto-approved by a settings.json allow
-# rule, so in-project files can only be protected by permissions.deny
-# entries: path_glob is the gitignore-style equivalent of path_regex that
-# the installer expands into Read/Write/Edit/MultiEdit deny entries.
+# path_regex guards the paths the hook sees (outside-cwd reads, `.claude/`
+# files, and the `sed -i` backdoor check). The PreToolUse hook is not
+# guaranteed to fire on the sub-agent and background paths, so in-project
+# files are also protected by permissions.deny entries: path_glob is the
+# gitignore-style equivalent of path_regex that the installer expands into
+# Read/Write/Edit deny entries.
 # Globs cannot express negative lookarounds, so a glob may over-match its
 # regex (e.g. `**/*.pem` also denies `*.pub.pem`) — erring toward deny.
 
