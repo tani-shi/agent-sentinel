@@ -14,6 +14,37 @@ command_regex = '''^\s*sudo\s+'''
 name = "fork-bomb"
 command_regex = ''':\(\)\s*\{'''
 
+# Busy-wait: a loop body that is only a no-op burns a CPU core with no work.
+# The splitter emits the loop body as its own segment (e.g. `do :`), so this
+# anchors on the `do`-prefixed form; a bare `:`/`true` statement is harmless.
+# \A (segment start, not MULTILINE line starts) so `do :` inside a heredoc body
+# is not misread as a loop body — matching the loop rules below.
+[[rules]]
+name = "busy-wait-noop"
+command_regex = '''\A\s*do\s+(:|true|continue)(\s|;|$)'''
+
+# Unbounded repetition. A single ASK approval cannot bound how many times a
+# loop body runs, so a side-effecting body (gh comment, git push, curl) runs
+# away after one confirmation. These are denied outright. `\A` anchors to the
+# segment start (not MULTILINE line starts) so `while`/`until`/`for` appearing
+# inside a heredoc or commit/PR body is not misread as a loop. List-form
+# `for x in ...` (bounded iteration) stays allowed via shell-constructs.
+[[rules]]
+name = "while-loop"
+command_regex = '''\A\s*while(\s|$)'''
+
+[[rules]]
+name = "until-loop"
+command_regex = '''\A\s*until(\s|$)'''
+
+[[rules]]
+name = "for-cstyle"
+command_regex = '''\A\s*for\s*\(\('''
+
+[[rules]]
+name = "watch"
+command_regex = '''\A\s*watch(\s|$)'''
+
 [[rules]]
 name = "mkfs"
 command_regex = '''mkfs(\.\w+)?\s+'''

@@ -49,9 +49,15 @@ So `cd infra && terraform apply -auto-approve` is split into `cd infra` (allow) 
 
 The splitter only models what it needs to find command boundaries; constructs it does not handle (heredocs `<<EOF`, ANSI-C quoting `$'…'`, `case` statements, unbalanced quotes/parens) are deferred to the LLM judge rather than punting to the human. Before falling through, the deny regex set is run against the full command string as a defense-in-depth pre-filter, so clear-cut dangerous patterns (e.g. `sudo`, `rm -rf /`, `curl … | sh`) are blocked even when the splitter cannot tokenize the command. A parser limitation can never silently *allow* a dangerous command — it can only widen the set of commands that flow through LLM evaluation, which itself falls back to **ask** on timeout or error.
 
-### Prefix-option normalization
+### Prefix normalization
 
-Rules are matched twice for each segment: once against the original command, then against a **prefix-option-stripped** form. This lets a single rule like `^\s*git\s+(diff|status|...)` match all of `git diff`, `git -c color.ui=never diff`, `git --no-pager diff`, and `git -C /tmp/repo diff` without enumerating every wrapper. Stripping is whitelist-only — for each known program (git, npm, yarn, pnpm, bun, uv, cargo, go, make, docker, gh, kubectl, aws, gcloud) only documented prefix options like `-c`, `-C`, `--no-pager`, `--silent`, `-q`, `-R`, `-j`, `--config`, `--region` are removed. An unknown option halts stripping (safe fallback), and options after the subcommand (`git push --force`, `npm run test --silent`) are never touched. The same normalization is applied to ALLOW, ASK, and DENY matching, so prefix options cannot be used to slip past confirmation rules either.
+Rules are matched twice for each segment: once against the original command, then against a **normalized** form. This lets a single rule like `^\s*git\s+(diff|status|...)` match all of `git diff`, `git -c color.ui=never diff`, `git --no-pager diff`, and `git -C /tmp/repo diff` without enumerating every wrapper. Stripping is whitelist-only — for each known program (git, npm, yarn, pnpm, bun, uv, cargo, go, make, docker, gh, kubectl, aws, gcloud) only documented prefix options like `-c`, `-C`, `--no-pager`, `--silent`, `-q`, `-R`, `-j`, `--config`, `--region` are removed. An unknown option halts stripping (safe fallback), and options after the subcommand (`git push --force`, `npm run test --silent`) are never touched.
+
+Normalization also strips leading **wrapper tokens** that would otherwise let a dangerous command slip past a start-anchored rule: the `!` negation and the `do`/`then`/`else`/`command`/`exec`/`builtin`/`time`/`nohup` prefixes, plus argument-taking **command runners** (`env [VAR=val]…`, `timeout [opts] DURATION`, `nice`, `ionice`, `stdbuf`). So `! kill -0 1` matches the `kill` ASK rule, `do rm -rf "$x"` (a loop body) matches the recursive-`rm` ASK rule, `! rm -rf /` matches `rm-rf-root`, and `env sudo apt` / `timeout 60 kill -1` match the `sudo` / `kill-broadcast` DENY rules. Condition keywords (`while`/`until`/`for`/`if`/`case`) are left intact. The same normalization is applied to ALLOW, ASK, and DENY matching, so none of these prefixes can be used to slip past confirmation rules.
+
+**Inline scripts are recursed into.** A `bash -c "<script>"` / `sh -c` / `eval "<script>"` argument would otherwise be one opaque segment matched by the permissive shell-run allow rule, hiding whatever the script does. The splitter dequotes the inline script and evaluates its commands under the same rules, so `bash -c "while true; do gh pr comment 1; done"` is denied like a bare loop. If the inner script is itself unparseable, the whole command is routed to the deny prefilter and the LLM judge rather than auto-allowed.
+
+**Loops.** `while`/`until` and C-style `for (( … ))` are denied (unbounded). A `for` over a literal list (`for pr in 1 2 3`) is allowed; a `for` whose iterator is a command substitution (`for i in $(seq …)`) is left for the LLM judge, which denies unbounded/side-effecting fan-out.
 
 File tools (`Read`, `Write`, `Edit`, `MultiEdit`) are protected in two layers, because the `PermissionRequest` hook only fires when Claude Code would show a permission prompt — a tool call auto-approved by a `permissions.allow` rule never reaches the hook:
 
@@ -69,6 +75,10 @@ Tools with external impact (e.g. Slack send/schedule/canvas tools) require user 
 | `rm-rf-root` | `rm -rf /`, `rm -rf ~`, `rm -rf $HOME` |
 | `sudo` | Any command starting with `sudo` |
 | `fork-bomb` | `:(){ :\|:& };:` pattern |
+| `busy-wait-noop` | A loop body that is only a no-op (`do :`, `do true`, `do continue`) — an infinite CPU spin |
+| `while-loop` / `until-loop` | `while`/`until` loops — a single approval cannot bound how many times a side-effecting body runs |
+| `for-cstyle` | C-style `for (( … ))` (e.g. `for (( ; ; ))`) — unbounded loop. List-form `for x in …` stays allowed |
+| `watch` | `watch <cmd>` — repeats a command indefinitely |
 | `mkfs` | `mkfs` / `mkfs.ext4` etc. |
 | `dd-zero` | `dd if=/dev/zero` or `/dev/urandom` |
 | `pipe-to-shell` | `curl \| bash`, `wget \| sh` |
@@ -250,7 +260,7 @@ When a command matches neither deny, allow, nor ask rules, `claude-sentinel` inv
 claude -p "<prompt>" --model claude-haiku-4-5-20251001
 ```
 
-The LLM evaluates the command and responds with `ALLOW`, `DENY`, or `ASK`. On timeout (15s) or error, the decision falls back to `ASK`, which prompts the user for manual approval.
+The LLM evaluates the command and responds with `ALLOW`, `DENY`, or `ASK`. Clearly dangerous or runaway commands (system-wide data loss, secret exfiltration, infinite/busy-wait loops, unbounded repeated external mutations) are denied outright; commands with a single bounded external impact that a human should confirm (publishing, deploying, one-off external mutations) are asked. On timeout or error the decision falls back to `ASK`, which prompts the user for manual approval.
 
 ## Project structure
 

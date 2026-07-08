@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import re
+import shlex
 import tomllib
 from dataclasses import dataclass, field
 from importlib import resources
 from typing import Any, Literal
 
-from claude_sentinel.command_normalizer import normalize_for_matching
+from claude_sentinel.command_normalizer import (
+    drop_leading_runners,
+    normalize_for_matching,
+)
 
 
 @dataclass
@@ -594,6 +598,52 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
             _split_range(s, a, b, all_segments)
 
 
+# Constructs that run a STRING argument as an inline script. The char splitter
+# treats that argument as one opaque quoted token, so without this the whole
+# `bash -c "..."` / `eval "..."` is a single segment that matches a permissive
+# allow rule — hiding whatever the script does (a loop, a mutation) from the
+# start-anchored rules. We dequote the script and evaluate its commands too.
+_SHELL_C_RUNNERS: frozenset[str] = frozenset({"bash", "sh", "zsh", "dash", "ash", "ksh"})
+# A short-flag group ending in `c` (`-c`, `-lc`, `-euc`) introduces the script;
+# one ending in `o` (`-o`, `-euo`) consumes the next token as its value
+# (`-o pipefail`), so that value must be skipped, not treated as the command.
+_DASH_C_FLAG = re.compile(r"[-+][a-zA-Z]*c")
+_DASH_O_FLAG = re.compile(r"[-+][a-zA-Z]*o")
+
+
+def _extract_inline_script(segment: str) -> str | None:
+    """Return the inline script from a ``<shell> [opts] -c <script>`` or
+    ``eval <script>`` segment, else ``None``.
+
+    Leading wrapper/runner prefixes (``exec``/``nohup``/``env``/``timeout`` …)
+    are stripped first, so ``exec bash -c '...'`` and ``timeout 5 bash -c '...'``
+    are still unwrapped. Returns ``None`` when the segment is not such a form or
+    cannot be dequoted.
+    """
+    try:
+        tokens = drop_leading_runners(shlex.split(segment, posix=True))
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    if tokens[0] == "eval" and len(tokens) >= 2:
+        return " ".join(tokens[1:])
+    if len(tokens) < 3 or tokens[0] not in _SHELL_C_RUNNERS:
+        return None
+    idx = 1
+    while idx < len(tokens):
+        tok = tokens[idx]
+        if not tok.startswith(("-", "+")):
+            return None  # command/script-file word reached before any -c
+        if _DASH_C_FLAG.fullmatch(tok):
+            return tokens[idx + 1] if idx + 1 < len(tokens) else None
+        if _DASH_O_FLAG.fullmatch(tok):
+            idx += 2  # e.g. -o pipefail / -euo pipefail — skip the value
+            continue
+        idx += 1
+    return None
+
+
 def extract_commands(command: str) -> list[str] | None:
     """Split a bash command into the individual commands it would execute.
 
@@ -625,6 +675,19 @@ def extract_commands(command: str) -> list[str] | None:
             continue
         seen.add((a, b))
         out.append(command[a:b])
+
+    # Recurse into `bash -c <script>` / `eval <script>` inline scripts so their
+    # commands face the same rules. If an inner script is itself unparseable, we
+    # must not let the opaque wrapper segment be auto-allowed — treat the whole
+    # command as unparseable so it goes through the deny prefilter and the LLM.
+    for segment in list(out):
+        script = _extract_inline_script(segment)
+        if script is None:
+            continue
+        inner = extract_commands(script)
+        if inner is None:
+            return None
+        out.extend(inner)
     return out
 
 
