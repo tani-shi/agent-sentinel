@@ -4,54 +4,105 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Sequence
 from importlib import resources
+from typing import Any
 
 _MODEL = "claude-haiku-4-5-20251001"
+# Empties suppress the parent Claude Code session's env so the judge runs as a
+# standalone query rather than a nested tool call.
+_JUDGE_ENV = {"CLAUDECODE": "", "CLAUDE_CODE_ENTRYPOINT": ""}
 _SDK_TIMEOUT = 30.0
+_PLAIN_MAX_TURNS = 2
 _MAX_RETRIES = 2
 _RETRY_DELAY_SECONDS = 1.0
 
+# Read mode's budgets exceed the plain mode's because a Read + final-answer cycle
+# spends more than one turn, and reading a file over the network is slower than a
+# plain text reply.
+_READ_MAX_TURNS = 6
+_READ_SDK_TIMEOUT = 60.0
 
-def _load_prompt_template() -> str:
-    """Load the LLM prompt template."""
+
+def _load_prompt_template(filename: str) -> str:
+    """Load an LLM prompt template from the rules package."""
     rules_pkg = resources.files("claude_sentinel.rules")
-    return (rules_pkg / "llm_prompt.txt").read_text(encoding="utf-8")
+    return (rules_pkg / filename).read_text(encoding="utf-8")
 
 
-async def _evaluate_sdk(prompt: str) -> tuple[str, str]:
-    """Evaluate using Claude Code SDK (async)."""
-    from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+async def _evaluate_sdk(prompt: str, options: Any, timeout: float) -> tuple[str, str]:
+    """Run one judge query through the Claude Agent SDK and parse its verdict."""
+    from claude_agent_sdk import ResultMessage, query
 
-    options = ClaudeAgentOptions(
-        model=_MODEL,
-        tools=[],
-        max_turns=2,
-        permission_mode="bypassPermissions",
-        allowed_tools=[],
-        env={"CLAUDECODE": "", "CLAUDE_CODE_ENTRYPOINT": ""},
-    )
-
-    result_text = ""
-    async with asyncio.timeout(_SDK_TIMEOUT):
+    async with asyncio.timeout(timeout):
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, ResultMessage):
-                result_text = message.result or ""
+                # Return on the terminal ResultMessage rather than iterating
+                # further: a lingering stream would otherwise let the timeout
+                # discard a verdict already in hand.
+                if message.subtype == "success":
+                    return _parse_response((message.result or "").strip())
+                # Non-success subtypes (error_max_turns, …) have no `result`.
+                return "ask", f"LLM judge incomplete: {message.subtype}"
 
-    return _parse_response(result_text.strip())
+    return _parse_response("")
 
 
-def evaluate(command: str, cwd: str) -> tuple[str, str]:
+def _plain_options() -> Any:
+    from claude_agent_sdk import ClaudeAgentOptions
+
+    return ClaudeAgentOptions(
+        model=_MODEL,
+        tools=[],
+        max_turns=_PLAIN_MAX_TURNS,
+        permission_mode="bypassPermissions",
+        allowed_tools=[],
+        env=_JUDGE_ENV,
+    )
+
+
+def _read_options(cwd: str, read_dirs: Sequence[str]) -> Any:
+    from pathlib import Path
+
+    from claude_agent_sdk import ClaudeAgentOptions
+
+    add_dirs: list[str | Path] = [*read_dirs]
+    return ClaudeAgentOptions(
+        model=_MODEL,
+        tools=["Read"],
+        max_turns=_READ_MAX_TURNS,
+        permission_mode="bypassPermissions",
+        allowed_tools=["Read"],
+        cwd=cwd,
+        add_dirs=add_dirs,
+        env=_JUDGE_ENV,
+    )
+
+
+def evaluate(command: str, cwd: str, read_dirs: Sequence[str] | None = None) -> tuple[str, str]:
     """Evaluate a command using the LLM judge.
 
     Returns (decision, reason) where decision is "allow", "deny", or "ask".
     Clearly dangerous commands are denied; commands needing human judgment are
     asked. A timeout or error falls back to "ask" so the human decides.
+
+    When ``read_dirs`` is given, the judge runs in read mode: it is granted the
+    built-in Read tool scoped to ``cwd`` plus ``read_dirs`` so it can inspect
+    out-of-project script files the command executes before deciding.
     """
-    prompt = _load_prompt_template().format(command=command, cwd=cwd)
+    if read_dirs:
+        prompt = _load_prompt_template("llm_prompt_read.txt").format(command=command, cwd=cwd)
+        options = _read_options(cwd, read_dirs)
+        timeout = _READ_SDK_TIMEOUT
+    else:
+        prompt = _load_prompt_template("llm_prompt.txt").format(command=command, cwd=cwd)
+        options = _plain_options()
+        timeout = _SDK_TIMEOUT
+
     last_error = ""
     for attempt in range(_MAX_RETRIES):
         try:
-            return asyncio.run(_evaluate_sdk(prompt))
+            return asyncio.run(_evaluate_sdk(prompt, options, timeout))
         except TimeoutError:
             last_error = "LLM judge timed out"
             if attempt < _MAX_RETRIES - 1:

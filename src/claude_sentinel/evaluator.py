@@ -65,16 +65,18 @@ def evaluate(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
 def _evaluate_bash(tool_input: dict[str, Any], hook_input: dict[str, Any]) -> tuple[str, str, str]:
     """Evaluate a Bash command via segment-aware rule matching.
 
-    The command is split into individual segments using a real bash AST
+    The command is split into individual segments by an in-house splitter
     (so compound commands using ``&&``, ``||``, ``;``, ``|``, ``$()``,
     ``<()``, etc. are evaluated per-segment) and each segment is checked
-    against DENY -> ASK -> ALLOW with strictest-wins aggregation. If any
-    segment is unmatched by all rule sets, fall through to the LLM judge
-    with the full original command for context.
+    against DENY -> ASK -> interpreter-escalation -> ALLOW with strictest-wins
+    aggregation. A segment matched by no rule falls through to the LLM judge;
+    an out-of-project script file falls through to the read judge, which is
+    granted read access to that file.
     """
     command = tool_input.get("command", "")
+    cwd = hook_input.get("cwd", ".")
 
-    decision, reason = rules.evaluate_command(command)
+    decision, reason, read_dirs = rules.evaluate_bash_command(command, cwd)
     if decision == "deny":
         return "deny", reason, "RULE_DENY"
     if decision == "ask":
@@ -82,8 +84,10 @@ def _evaluate_bash(tool_input: dict[str, Any], hook_input: dict[str, Any]) -> tu
     if decision == "allow":
         return "allow", reason, "RULE_ALLOW"
 
-    # decision == "llm": at least one segment was unmatched.
-    cwd = hook_input.get("cwd", ".")
+    if decision == "llm_read":
+        llm_decision, llm_reason = llm_judge.evaluate(command, cwd, read_dirs=read_dirs)
+        return llm_decision, llm_reason, "LLM_JUDGE_READ"
+
     llm_decision, llm_reason = llm_judge.evaluate(command, cwd)
     return llm_decision, llm_reason, "LLM_JUDGE"
 

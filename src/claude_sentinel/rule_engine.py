@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import tomllib
 from dataclasses import dataclass, field
 from importlib import resources
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from claude_sentinel.command_normalizer import (
     drop_leading_runners,
@@ -611,6 +612,15 @@ _DASH_C_FLAG = re.compile(r"[-+][a-zA-Z]*c")
 _DASH_O_FLAG = re.compile(r"[-+][a-zA-Z]*o")
 
 
+def _tokenize_segment(segment: str) -> list[str]:
+    """Shell-split a segment and drop leading wrapper/runner prefixes, returning
+    ``[]`` when it cannot be dequoted."""
+    try:
+        return drop_leading_runners(shlex.split(segment, posix=True))
+    except ValueError:
+        return []
+
+
 def _extract_inline_script(segment: str) -> str | None:
     """Return the inline script from a ``<shell> [opts] -c <script>`` or
     ``eval <script>`` segment, else ``None``.
@@ -620,10 +630,7 @@ def _extract_inline_script(segment: str) -> str | None:
     are still unwrapped. Returns ``None`` when the segment is not such a form or
     cannot be dequoted.
     """
-    try:
-        tokens = drop_leading_runners(shlex.split(segment, posix=True))
-    except ValueError:
-        return None
+    tokens = _tokenize_segment(segment)
     if not tokens:
         return None
     if tokens[0] == "eval" and len(tokens) >= 2:
@@ -691,37 +698,176 @@ def extract_commands(command: str) -> list[str] | None:
     return out
 
 
-def _evaluate_segment(segment: str) -> tuple[str, Rule | None]:
-    """Evaluate a single segment through DENY -> ASK -> ALLOW.
+# Interpreters that run arbitrary code and so must be intercepted before the
+# broad allow rules. node/python/bash/sh/zsh are otherwise blanket-allowed by
+# node-run/python-run/zsh-run; ruby/perl/dash/ksh/ash have no allow rule and are
+# escalated only to upgrade an out-of-project script from the plain judge to the
+# read judge. deno/bun are excluded: their subcommand grammar (``deno run
+# <file>`` / ``bun run <script-name>``) doesn't fit the ``<interp> [opts]
+# <file>`` model a reader would otherwise expect them to.
+_SCRIPT_INTERPRETERS: frozenset[str] = frozenset(
+    {"node", "python", "python3", "ruby", "perl", "bash", "sh", "zsh", "dash", "ksh", "ash"}
+)
 
-    Returns (decision, matched_rule) where decision is one of
-    'deny', 'ask', 'allow', 'unmatched'.
+# Flags that make an interpreter run inline code from the command string rather
+# than a file. The code is visible to the judge in the command text, so these
+# route to the plain LLM judge rather than the read judge. Shells are absent:
+# their ``-c`` inline form is unwrapped and re-evaluated upstream by
+# ``extract_commands`` (see ``_SHELL_C_RUNNERS``).
+_INLINE_EVAL_FLAGS: dict[str, frozenset[str]] = {
+    "node": frozenset({"-e", "--eval", "-p", "--print"}),
+    "python": frozenset({"-c"}),
+    "python3": frozenset({"-c"}),
+    "ruby": frozenset({"-e"}),
+    "perl": frozenset({"-e", "-E"}),
+}
+
+
+def _has_inline_flag(args: list[str], inline_flags: frozenset[str]) -> bool:
+    """True if any arg is an inline-eval flag, including the glued short form
+    (``-ecode``) and the ``=``-attached long form (``--eval=code``). Matching the
+    bare split token alone would miss ``node -e'code'`` / ``python -c'code'`` and
+    let the inline code reach the permissive interpreter allow rule."""
+    for arg in args:
+        for flag in inline_flags:
+            if flag.startswith("--"):
+                if arg == flag or arg.startswith(flag + "="):
+                    return True
+            elif arg.startswith(flag):
+                return True
+    return False
+
+
+def _interpreter_escalation(segment: str, cwd: str) -> tuple[str | None, list[str]]:
+    """Classify an interpreter invocation that must escalate past the broad
+    ``node-run`` / ``python-run`` / ``zsh-run`` allow rules.
+
+    Returns ``(kind, outside_paths)`` where kind is:
+        * ``"llm"``      — inline code execution (``node -e``, ``python -c`` …).
+        * ``"llm_read"`` — runs a script FILE outside ``cwd``; ``outside_paths``
+          holds the resolved paths so the caller can grant the judge read access.
+        * ``None``       — not an escalating interpreter invocation (in-project
+          script, REPL, ``python -m`` …); defer to the normal allow rules.
+    """
+    tokens = _tokenize_segment(segment)
+    if not tokens:
+        return None, []
+    head = os.path.basename(tokens[0])
+    if head not in _SCRIPT_INTERPRETERS:
+        return None, []
+
+    args = tokens[1:]
+    if _has_inline_flag(args, _INLINE_EVAL_FLAGS.get(head, frozenset())):
+        return "llm", []
+    # A shell ``-c '<script>'`` is inline code, already unwrapped and re-evaluated
+    # by ``extract_commands``; its value is not a script file to read.
+    if head in _SHELL_C_RUNNERS and any(_DASH_C_FLAG.fullmatch(a) for a in args):
+        return None, []
+
+    outside = _out_of_project_scripts(args, cwd)
+    if outside:
+        return "llm_read", outside
+    return None, []
+
+
+def _out_of_project_scripts(args: list[str], cwd: str) -> list[str]:
+    """Resolved paths, among an interpreter's non-flag ``args``, that live outside
+    ``cwd``. Every non-flag argument is checked (not just the first positional):
+    a script can follow a value-taking flag, as in ``node -r preload.js app.js``
+    or ``python -W ignore ../outside/evil.py``, so restricting to the first
+    positional would miss it. In-project arguments resolve inside ``cwd`` and are
+    not flagged, so ordinary data-file arguments do not escalate.
+    """
+    base = os.path.expanduser(cwd)
+    root = os.path.realpath(base)
+    outside: list[str] = []
+    for arg in args:
+        if arg.startswith("-"):
+            continue
+        resolved = _resolve_path(arg, base)
+        if not _is_within(resolved, root):
+            outside.append(resolved)
+    return outside
+
+
+def _resolve_path(path: str, base: str) -> str:
+    expanded = os.path.expanduser(path)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(base, expanded)
+    return os.path.realpath(expanded)
+
+
+def _is_within(target: str, root: str) -> bool:
+    """True when realpath ``target`` is ``root`` or below it."""
+    try:
+        return os.path.commonpath([root, target]) == root
+    except ValueError:
+        # Uncomparable roots (different drives): treat as outside (safe).
+        return False
+
+
+def _evaluate_segment(segment: str, cwd: str) -> tuple[str, Rule | None, list[str]]:
+    """Evaluate a single segment through DENY -> ASK -> interpreter escalation
+    -> ALLOW.
+
+    Returns (decision, matched_rule, read_paths) where decision is one of
+    'deny', 'ask', 'llm', 'llm_read', 'allow', 'unmatched'. ``read_paths`` holds
+    the out-of-project script paths to grant read access to; it is non-empty only
+    for 'llm_read'.
+
+    The interpreter escalation runs before ALLOW so that inline code
+    (``node -e``) and out-of-project script files (``bash /tmp/x.sh``) are not
+    swallowed by the permissive ``node-run`` / ``zsh-run`` allow rules.
     """
     deny = match_deny(segment) or match_inplace_write_sensitive(segment)
     if deny:
-        return "deny", deny
+        return "deny", deny, []
     ask = match_ask(segment)
     if ask:
-        return "ask", ask
+        return "ask", ask, []
+    kind, paths = _interpreter_escalation(segment, cwd)
+    if kind is not None:
+        return kind, None, paths
     allow = match_allow(segment)
     if allow:
-        return "allow", allow
-    return "unmatched", None
+        return "allow", allow, []
+    return "unmatched", None, []
 
 
-def evaluate_command(
-    command: str,
-) -> tuple[Literal["deny", "ask", "allow", "llm"], str]:
+Decision = Literal["deny", "ask", "allow", "llm", "llm_read"]
+
+
+class BashEvaluation(NamedTuple):
+    """Full result of evaluating a bash command.
+
+    ``read_dirs`` is populated only when ``decision`` is ``"llm_read"``: the
+    directories the LLM judge must be granted read access to (``add_dirs``) so it
+    can inspect the out-of-project script files the command executes.
+    """
+
+    decision: Decision
+    reason: str
+    read_dirs: tuple[str, ...] = ()
+
+
+def evaluate_bash_command(command: str, cwd: str | None = None) -> BashEvaluation:
     """Evaluate a bash command by splitting it into segments and applying
-    DENY -> ASK -> ALLOW to each segment with strictest-wins aggregation.
+    DENY -> ASK -> interpreter escalation -> ALLOW to each segment with
+    strictest-wins aggregation.
 
     Decision precedence (most-restrictive wins):
-        deny > ask > llm > allow
+        deny > ask > llm_read > llm > allow
 
-    Returns (decision, reason). The reason is a human-readable string
-    suitable for logging. When decision is 'llm', the caller should invoke
-    the LLM judge with the original full command (not any segment).
+    ``cwd`` is the working directory the command runs in; it decides whether an
+    interpreter's script-file argument is inside the project (allow) or outside
+    it (``llm_read``). Defaults to ``os.getcwd()`` when not supplied.
+
+    For ``llm``/``llm_read`` the caller invokes the LLM judge with the original
+    full command; ``llm_read`` additionally carries ``read_dirs`` so the judge can
+    be granted read access to the out-of-project script files.
     """
+    if cwd is None:
+        cwd = os.getcwd()
     segments = extract_commands(command)
     if segments is None:
         # Defense-in-depth scan over the full string before LLM fallback.
@@ -730,22 +876,24 @@ def evaluate_command(
         # expected program.
         deny = match_deny(command) or match_inplace_write_sensitive(command)
         if deny:
-            return "deny", f"Blocked by deny rule: {deny.name}"
+            return BashEvaluation("deny", f"Blocked by deny rule: {deny.name}")
         ask = match_ask(command)
         if ask:
-            return "ask", f"Matched ask rule: {ask.name}"
-        return "llm", "Unparseable bash; deferring to LLM judge"
+            return BashEvaluation("ask", f"Matched ask rule: {ask.name}")
+        return BashEvaluation("llm", "Unparseable bash; deferring to LLM judge")
     if not segments:
-        return "allow", "Empty command"
+        return BashEvaluation("allow", "Empty command")
 
     deny_hit: Rule | None = None
     ask_hit: Rule | None = None
     has_unmatched = False
+    read_dirs: list[str] = []
+    seen_dirs: set[str] = set()
     allow_names: list[str] = []
     seen_allow: set[str] = set()
 
     for segment in segments:
-        decision, rule = _evaluate_segment(segment)
+        decision, rule, read_paths = _evaluate_segment(segment, cwd)
         if decision == "deny":
             assert rule is not None
             if deny_hit is None:
@@ -754,18 +902,37 @@ def evaluate_command(
             assert rule is not None
             if ask_hit is None:
                 ask_hit = rule
+        elif decision == "llm_read":
+            for parent in (os.path.dirname(p) for p in read_paths):
+                if parent and parent not in seen_dirs:
+                    seen_dirs.add(parent)
+                    read_dirs.append(parent)
         elif decision == "allow":
             assert rule is not None
             if rule.name not in seen_allow:
                 seen_allow.add(rule.name)
                 allow_names.append(rule.name)
         else:
+            # "llm" (inline eval) and "unmatched" both defer to the plain judge.
             has_unmatched = True
 
     if deny_hit is not None:
-        return "deny", f"Blocked by deny rule: {deny_hit.name}"
+        return BashEvaluation("deny", f"Blocked by deny rule: {deny_hit.name}")
     if ask_hit is not None:
-        return "ask", f"Matched ask rule: {ask_hit.name}"
+        return BashEvaluation("ask", f"Matched ask rule: {ask_hit.name}")
+    if read_dirs:
+        return BashEvaluation(
+            "llm_read",
+            "Out-of-project script; deferring to LLM judge with file read",
+            tuple(read_dirs),
+        )
     if has_unmatched:
-        return "llm", "No rule matched; deferring to LLM judge"
-    return "allow", f"Allowed by rules: {', '.join(allow_names)}"
+        return BashEvaluation("llm", "No rule matched; deferring to LLM judge")
+    return BashEvaluation("allow", f"Allowed by rules: {', '.join(allow_names)}")
+
+
+def evaluate_command(command: str, cwd: str | None = None) -> tuple[Decision, str]:
+    """Decision facade over :func:`evaluate_bash_command` for callers that need
+    only the (decision, reason) verdict, not the judge's read-access dirs."""
+    result = evaluate_bash_command(command, cwd)
+    return result.decision, result.reason

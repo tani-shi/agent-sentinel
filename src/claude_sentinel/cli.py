@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     log_parser.add_argument(
         "--stage",
-        choices=["RULE_DENY", "RULE_ALLOW", "RULE_ASK", "LLM_JUDGE"],
+        choices=["RULE_DENY", "RULE_ALLOW", "RULE_ASK", "LLM_JUDGE", "LLM_JUDGE_READ"],
         help="Filter by stage",
     )
     log_parser.add_argument("--since", help="Show records since (e.g. 1h, 30m, 2d)")

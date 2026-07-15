@@ -29,7 +29,7 @@ claude-sentinel uninstall
 Every Bash command and file path (Read/Write/Edit/MultiEdit) is evaluated through a multi-stage pipeline:
 
 ```
-stdin JSON → RULE_DENY → RULE_ASK → RULE_ALLOW → LLM_JUDGE → stdout JSON
+stdin JSON → RULE_DENY → RULE_ASK → RULE_ALLOW → LLM_JUDGE / LLM_JUDGE_READ → stdout JSON
 ```
 
 | Stage | Method | Speed | Description |
@@ -37,14 +37,15 @@ stdin JSON → RULE_DENY → RULE_ASK → RULE_ALLOW → LLM_JUDGE → stdout JS
 | RULE_DENY | Regex deny list | Instant | Blocks known-dangerous commands (e.g. `sudo`, `rm -rf /`, `curl \| bash`) |
 | RULE_ASK | Regex ask list | Instant | Prompts user confirmation for commands that need review (e.g. `ssh`, `systemctl`) |
 | RULE_ALLOW | Regex allow list | Instant | Permits known-safe commands (e.g. `ls`, `git status`, `make`) |
-| LLM_JUDGE | LLM judge | ~2-5s | Calls `claude -p` with haiku to evaluate ambiguous commands |
+| LLM_JUDGE | LLM judge (haiku) | ~2-5s | Evaluates ambiguous commands; inline code (`node -e`, `python -c`) lands here so the judge reads the code |
+| LLM_JUDGE_READ | LLM judge + Read tool | ~5-15s | Runs when a command executes a script **file outside the project**; the judge reads the script before deciding |
 
 ### Compound Bash commands
 
 Bash commands are not matched as a single string. A small in-house splitter (no external dependency) walks the command, tracks quoting and escaping, and finds **every individual command** inside pipelines (`|`, `|&`), lists (`&&`, `||`, `;`, `&`, newline), command substitutions (`$(…)`, `` `…` ``), process substitutions (`<(…)`, `>(…)`), subshells (`(…)`), and parameter expansions (`${…}`). Each segment is evaluated independently against DENY → ASK → ALLOW, and the overall decision is the strictest result:
 
 ```
-deny  >  ask  >  llm  >  allow
+deny  >  ask  >  llm_read  >  llm  >  allow
 ```
 
 So `cd infra && terraform apply -auto-approve` is split into `cd infra` (allow) and `terraform apply -auto-approve` (ask), and the result is **ask** — the dangerous segment cannot be hidden behind a permissive prefix. If even one segment matches no rule, the command falls through to the LLM judge with the full original string for context.
@@ -60,6 +61,11 @@ Normalization also strips leading **wrapper tokens** that would otherwise let a 
 **Inline scripts are recursed into.** A `bash -c "<script>"` / `sh -c` / `eval "<script>"` argument would otherwise be one opaque segment matched by the permissive shell-run allow rule, hiding whatever the script does. The splitter dequotes the inline script and evaluates its commands under the same rules, so `bash -c "while true; do gh pr comment 1; done"` is denied like a bare loop. If the inner script is itself unparseable, the whole command is routed to the deny prefilter and the LLM judge rather than auto-allowed.
 
 **Loops.** `while`/`until` and C-style `for (( … ))` are denied (unbounded). A `for` over a literal list (`for pr in 1 2 3`) is allowed; a `for` whose iterator is a command substitution (`for i in $(seq …)`) is left for the LLM judge, which denies unbounded/side-effecting fan-out.
+
+**Interpreters are not blanket-allowed.** `node`, `python`, `ruby`, `perl`, and the shells run arbitrary code, so their broad allow rules (`node-run`, `python-run`, `zsh-run`) are intercepted before they fire:
+
+- **Inline code** — `node -e/-p/--eval/--print`, `python -c`, `ruby -e`, `perl -e` — is routed to `LLM_JUDGE`. The code lives in the command string, so the judge reads it directly. (This closes the gap where `node -e 'process.kill(…)'` was auto-allowed.)
+- **A script file outside the project** — e.g. `bash /tmp/x.sh`, `node /tmp/y.js` — is routed to `LLM_JUDGE_READ`. The script path is resolved against the working directory; anything not under it triggers a judge that is granted the built-in `Read` tool (scoped to the script's directory) to inspect the file before deciding. Scripts **inside** the project stay auto-allowed as ordinary local development.
 
 File tools (`Read`, `Write`, `Edit`, `MultiEdit`) are protected in two layers. The `PreToolUse` hook fires on every tool call, so its sensitive-path evaluation now sees even calls a `permissions.allow` rule would auto-approve — but the hook is not guaranteed to fire on the sub-agent and background paths, so the `settings.json` layer is kept as defense-in-depth:
 
@@ -254,15 +260,14 @@ claude-sentinel install    # Add hooks to ~/.claude/settings.json
 claude-sentinel uninstall  # Remove hooks from ~/.claude/settings.json
 ```
 
-## LLM judge (LLM_JUDGE)
+## LLM judge (LLM_JUDGE / LLM_JUDGE_READ)
 
-When a command matches neither deny, allow, nor ask rules, `claude-sentinel` invokes:
+When a command matches neither deny, allow, nor ask rules — or is an interpreter escalation (see above) — `claude-sentinel` evaluates it with the Claude Agent SDK (`claude-haiku-4-5-20251001`):
 
-```
-claude -p "<prompt>" --model claude-haiku-4-5-20251001
-```
+- **`LLM_JUDGE`** (no tools, `max_turns=2`) — the default. The judge sees only the command string.
+- **`LLM_JUDGE_READ`** (built-in `Read` tool, `max_turns=6`, scoped to the out-of-project script's directory via `add_dirs`) — used when the command runs a script file outside the project, so the judge can read the script before deciding.
 
-The LLM evaluates the command and responds with `ALLOW`, `DENY`, or `ASK`. Clearly dangerous or runaway commands (system-wide data loss, secret exfiltration, infinite/busy-wait loops, unbounded repeated external mutations) are denied outright; commands with a single bounded external impact that a human should confirm (publishing, deploying, one-off external mutations) are asked. On timeout or error the decision falls back to `ASK`, which prompts the user for manual approval.
+The LLM responds with `ALLOW`, `DENY`, or `ASK`. Clearly dangerous or runaway commands (system-wide data loss, secret exfiltration, killing unowned processes, infinite/busy-wait loops, unbounded repeated external mutations) are denied outright; commands with a single bounded external impact that a human should confirm (publishing, deploying, one-off external mutations) are asked. On timeout, an incomplete result (`error_max_turns`), or any error the decision falls back to `ASK`, which prompts the user for manual approval.
 
 ## Project structure
 
@@ -273,15 +278,16 @@ src/claude_sentinel/
 ├── hook_io.py            # stdin/stdout JSON handling
 ├── rule_engine.py        # TOML rule loading and regex matching
 ├── command_normalizer.py # Strip prefix options before matching/grouping
-├── llm_judge.py          # LLM_JUDGE: claude subprocess
+├── llm_judge.py          # LLM_JUDGE/LLM_JUDGE_READ: Claude Agent SDK judge
 ├── applier.py            # Append validated rules to allow/ask.toml
 ├── logger.py             # Evaluation log writer/reader
 ├── installer.py          # Hook install/uninstall
 └── rules/
-    ├── deny.toml           # RULE_DENY patterns
-    ├── allow.toml          # RULE_ALLOW patterns
-    ├── ask.toml            # RULE_ASK patterns
-    └── llm_prompt.txt      # LLM_JUDGE prompt template
+    ├── deny.toml            # RULE_DENY patterns
+    ├── allow.toml           # RULE_ALLOW patterns
+    ├── ask.toml             # RULE_ASK patterns
+    ├── llm_prompt.txt       # LLM_JUDGE prompt template
+    └── llm_prompt_read.txt  # LLM_JUDGE_READ prompt template (reads out-of-project scripts)
 ```
 
 Rule maintenance is driven by an interactive Claude Code slash command:

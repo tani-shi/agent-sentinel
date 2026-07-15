@@ -4,6 +4,7 @@ import pytest
 
 from claude_sentinel.rule_engine import (
     _expand_fragments,
+    evaluate_bash_command,
     evaluate_command,
     extract_commands,
     get_deny_rules,
@@ -1982,3 +1983,107 @@ class TestEvaluateCommand:
 
     def test_loop_body_rm_recursive_asks(self):
         assert match_ask('do rm -rf "$x"') is not None
+
+
+class TestInterpreterEscalation:
+    """Inline code and out-of-project script files must not be blanket-allowed
+    by the broad node-run/python-run/zsh-run allow rules."""
+
+    CWD = "/proj"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "node -e 'process.kill(1)'",
+            'node --eval="x"',
+            "node -p '1'",
+            "node --print '1'",
+            "python -c 'import os'",
+            "python3 -c 'x'",
+            "ruby -e 'x'",
+            "perl -e 'x'",
+            "perl -E 'say 1'",
+        ],
+    )
+    def test_inline_eval_falls_to_llm(self, cmd):
+        assert evaluate_command(cmd, self.CWD)[0] == "llm", cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "node -e'process.exit()'",
+            "node -p'1+1'",
+            "python -c'import os'",
+            "python3 -c'x'",
+            "ruby -e'x'",
+            "node --eval='x'",
+        ],
+    )
+    def test_glued_inline_flag_not_bypassable(self, cmd):
+        # `node -e'code'` / `python -c'code'` (no space) must not slip past to the
+        # broad interpreter allow rule.
+        assert evaluate_command(cmd, self.CWD)[0] == "llm", cmd
+
+    def test_reported_incident_no_longer_auto_allowed(self):
+        # 2026-07-14: node -e process.kill took down iTerm2 after RULE_ALLOW.
+        cmd = (
+            "node -e '\nfor (const pid of [15873, 15841]) {\n"
+            '  try { process.kill(pid, "SIGTERM"); } catch (e) {}\n}\n\''
+        )
+        assert evaluate_command(cmd, self.CWD)[0] == "llm"
+
+    def test_benign_inline_still_judged(self):
+        # Accepted tradeoff: harmless inspection also routes to the judge.
+        cmd = "node -e \"console.log(require('./p.json'))\""
+        assert evaluate_command(cmd, self.CWD)[0] == "llm"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "node /tmp/x.js",
+            "bash /private/tmp/y.sh",
+            "python /tmp/z.py",
+            "sh ~/elsewhere/a.sh",
+            "node -r /tmp/preload.js app.js",
+            # Out-of-project script after a value-taking flag, relative form.
+            "python -W ignore ../outside/evil.py",
+        ],
+    )
+    def test_out_of_project_script_needs_read_judge(self, cmd):
+        assert evaluate_command(cmd, self.CWD)[0] == "llm_read", cmd
+
+    def test_shell_dash_c_value_not_treated_as_script(self):
+        # A shell -c value that looks like an absolute path is inline code (handled
+        # by the extract_commands unwrap), not an out-of-project script file.
+        assert evaluate_command('bash -c "/usr/local/bin/setup.sh; echo done"', self.CWD)[0] != (
+            "llm_read"
+        )
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "node scripts/x.js",
+            "node ./x.js",
+            "node /proj/scripts/x.js",
+            "bash ./deploy.sh",
+        ],
+    )
+    def test_in_project_script_still_allowed(self, cmd):
+        assert evaluate_command(cmd, self.CWD)[0] == "allow", cmd
+
+    @pytest.mark.parametrize("cmd", ["node --version", "python -m pytest", "python3 --help"])
+    def test_non_script_interpreter_use_unaffected(self, cmd):
+        assert evaluate_command(cmd, self.CWD)[0] == "allow", cmd
+
+    def test_deny_still_wins_over_escalation(self):
+        # A destructive segment alongside an interpreter escalation stays deny.
+        assert evaluate_command("node /tmp/x.js; rm -rf /", self.CWD)[0] == "deny"
+
+    def test_read_dirs_cover_outside_scripts(self):
+        result = evaluate_bash_command("node /tmp/x.js && bash /private/tmp/y.sh", self.CWD)
+        assert result.decision == "llm_read"
+        # /tmp resolves through the macOS symlink to /private/tmp.
+        assert any(d.endswith("/tmp") for d in result.read_dirs)
+
+    def test_read_dirs_empty_for_in_project(self):
+        assert evaluate_bash_command("node scripts/x.js", self.CWD).read_dirs == ()
