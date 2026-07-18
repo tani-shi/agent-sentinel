@@ -75,6 +75,23 @@ class TestInstall:
         assert not any(e.startswith("MultiEdit(") for e in settings["permissions"]["deny"])
         assert "MultiEdit" not in settings["permissions"]["allow"]
 
+    def test_install_strips_stale_write_deny_but_keeps_allow(self, settings_file):
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "permissions": {
+                        "deny": ["Write(**/.env)", "Write(**/.ssh/**)"],
+                        "allow": ["Write"],
+                    }
+                }
+            )
+        )
+        install(settings_file)
+
+        settings = json.loads(settings_file.read_text())
+        assert not any(e.startswith("Write(") for e in settings["permissions"]["deny"])
+        assert "Write" in settings["permissions"]["allow"]
+
     def test_install_malformed_settings(self, settings_file):
         settings_file.write_text("{not valid json")
         with pytest.raises(SystemExit, match="invalid JSON"):
@@ -117,11 +134,14 @@ class TestInstallPermissions:
         settings = json.loads(settings_file.read_text())
         deny = settings["permissions"]["deny"]
         assert set(managed["deny"]).issubset(set(deny))
-        for tool in ("Read", "Write", "Edit"):
+        for tool in ("Read", "Edit"):
             assert f"{tool}(**/.env)" in deny
             assert f"{tool}(**/.env.*)" in deny
             assert f"{tool}(**/.ssh/**)" in deny
             assert f"{tool}(**/.aws/**)" in deny
+        # Write(...) deny rules are not honored by Claude Code's file-permission
+        # checks (Edit(...) covers all editing tools), so none are generated.
+        assert not any(e.startswith("Write(") for e in deny)
 
     def test_managed_deny_covers_every_sensitive_path_rule(self, managed):
         from claude_sentinel.rule_engine import get_deny_rules
@@ -248,6 +268,20 @@ class TestUninstall:
             assert entry not in perms.get("allow", [])
         for entry in managed["ask"]:
             assert entry not in perms.get("ask", [])
+
+    def test_uninstall_removes_stale_write_deny(self, settings_file):
+        # A legacy install left Write(...) deny globs the current managed set no
+        # longer enumerates; uninstall must still shed them.
+        settings_file.write_text(
+            json.dumps(
+                {"permissions": {"deny": ["Write(**/.env)", "Write(**/.ssh/**)"]}}
+            )
+        )
+        uninstall(settings_file)
+
+        settings = json.loads(settings_file.read_text())
+        deny = settings.get("permissions", {}).get("deny", [])
+        assert not any(e.startswith("Write(") for e in deny)
 
     def test_uninstall_preserves_user_permissions(self, settings_file):
         settings_file.write_text(
