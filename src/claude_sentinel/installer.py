@@ -21,6 +21,16 @@ LEGACY_HOOK_EVENTS = ["PermissionRequest"]
 # version stops triggering "matches no known tool" warnings.
 LEGACY_FILE_TOOLS = ["MultiEdit"]
 
+# Tools whose path-scoped deny rules Claude Code honors for file-permission
+# checks. Write(...) is omitted: Claude Code ignores it and Edit(...) already
+# covers every file-editing tool (Write/Edit/MultiEdit/NotebookEdit).
+DENY_RULE_TOOLS = ("Edit", "Read")
+
+# Deny globs for these tools are no longer generated but may linger from an
+# earlier install; strip them. The bare allow entry stays (Write is still a
+# live runtime tool), so in-project writes keep flowing prompt-free.
+STALE_DENY_TOOLS = ["Write"]
+
 HOOK_ENTRIES = [
     {
         "matcher": "*",
@@ -46,7 +56,9 @@ def _get_managed_permissions() -> dict[str, list[str]]:
     """
     return {
         "deny": sorted(
-            f"{tool}({glob})" for tool in FILE_TOOLS for glob in rule_engine.sensitive_path_globs()
+            f"{tool}({glob})"
+            for tool in DENY_RULE_TOOLS
+            for glob in rule_engine.sensitive_path_globs()
         ),
         "allow": sorted(AUTO_ALLOW_TOOLS | FILE_TOOLS),
         "ask": sorted(ASK_TOOLS),
@@ -67,8 +79,8 @@ def install(settings_path: Path | None = None) -> str:
         backup = path.with_suffix(".json.bak")
         shutil.copy2(path, backup)
 
-    # Strip permission entries for tools Claude Code no longer knows.
-    legacy_perm_removed = _remove_legacy_file_tools(settings)
+    # Strip permission entries Claude Code no longer honors.
+    legacy_perm_removed = _remove_stale_permissions(settings)
 
     # Merge permissions
     managed = _get_managed_permissions()
@@ -135,7 +147,9 @@ def uninstall(settings_path: Path | None = None) -> str:
     path = settings_path or SETTINGS_PATH
     settings = _load_settings(path)
 
-    # Remove managed permissions
+    # Remove managed permissions, plus any stale entries left by an earlier
+    # install that the current managed set no longer enumerates.
+    stale_removed = _remove_stale_permissions(settings)
     managed = _get_managed_permissions()
     perm_removed = {}
     for key in ("deny", "allow", "ask"):
@@ -154,7 +168,7 @@ def uninstall(settings_path: Path | None = None) -> str:
         _remove_hook(settings, event) for event in (HOOK_EVENT, *LEGACY_HOOK_EVENTS)
     )
 
-    any_changes = hooks_removed or any(v > 0 for v in perm_removed.values())
+    any_changes = hooks_removed or stale_removed or any(v > 0 for v in perm_removed.values())
     if not any_changes:
         return "claude-sentinel not found in settings"
 
@@ -199,13 +213,20 @@ def _remove_hook(settings: dict, event: str) -> bool:
     return True
 
 
-def _remove_legacy_file_tools(settings: dict) -> bool:
-    """Remove permission entries for tools in LEGACY_FILE_TOOLS. Returns True if any removed."""
+def _remove_stale_permissions(settings: dict) -> bool:
+    """Strip permission entries Claude Code no longer honors. Returns True if any removed.
+
+    LEGACY_FILE_TOOLS have their deny globs and bare allow entry removed (the
+    tool is gone). STALE_DENY_TOOLS keep their bare allow entry (Write is still
+    a live runtime tool) and only shed their now-ignored path-scoped deny globs.
+    """
     globs = rule_engine.sensitive_path_globs()
     removed = 0
     for tool in LEGACY_FILE_TOOLS:
         removed += _remove_permissions(settings, "deny", [f"{tool}({glob})" for glob in globs])
         removed += _remove_permissions(settings, "allow", [tool])
+    for tool in STALE_DENY_TOOLS:
+        removed += _remove_permissions(settings, "deny", [f"{tool}({glob})" for glob in globs])
     return removed > 0
 
 
