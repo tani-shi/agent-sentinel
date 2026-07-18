@@ -21,6 +21,7 @@ class Rule:
     name: str
     pattern: re.Pattern[str]
     path_globs: tuple[str, ...] = ()
+    reason: str | None = None
 
 
 @dataclass
@@ -53,6 +54,7 @@ def _parse_rules(data: dict[str, Any], *, kind: str) -> RuleSet:
             Rule(
                 name=entry["name"],
                 pattern=re.compile(_expand_fragments(entry["command_regex"], fragments), flags),
+                reason=entry.get("reason"),
             )
         )
     for entry in data.get("sensitive_path_rules", []):
@@ -850,6 +852,17 @@ class BashEvaluation(NamedTuple):
     read_dirs: tuple[str, ...] = ()
 
 
+def _deny_reason(rule: Rule) -> str:
+    """Deny reason surfaced to Claude, with the rule's guidance appended.
+
+    A rule's optional ``reason`` redirects Claude to the native alternative
+    (subagent completion notification, run_in_background, KillShell/TaskStop)
+    so a reason-less block does not push it toward a bypass.
+    """
+    base = f"Blocked by deny rule: {rule.name}"
+    return f"{base}. {rule.reason}" if rule.reason else base
+
+
 def evaluate_bash_command(command: str, cwd: str | None = None) -> BashEvaluation:
     """Evaluate a bash command by splitting it into segments and applying
     DENY -> ASK -> interpreter escalation -> ALLOW to each segment with
@@ -876,7 +889,7 @@ def evaluate_bash_command(command: str, cwd: str | None = None) -> BashEvaluatio
         # expected program.
         deny = match_deny(command) or match_inplace_write_sensitive(command)
         if deny:
-            return BashEvaluation("deny", f"Blocked by deny rule: {deny.name}")
+            return BashEvaluation("deny", _deny_reason(deny))
         ask = match_ask(command)
         if ask:
             return BashEvaluation("ask", f"Matched ask rule: {ask.name}")
@@ -917,7 +930,7 @@ def evaluate_bash_command(command: str, cwd: str | None = None) -> BashEvaluatio
             has_unmatched = True
 
     if deny_hit is not None:
-        return BashEvaluation("deny", f"Blocked by deny rule: {deny_hit.name}")
+        return BashEvaluation("deny", _deny_reason(deny_hit))
     if ask_hit is not None:
         return BashEvaluation("ask", f"Matched ask rule: {ask_hit.name}")
     if read_dirs:
