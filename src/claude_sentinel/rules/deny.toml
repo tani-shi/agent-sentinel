@@ -22,6 +22,7 @@ command_regex = ''':\(\)\s*\{'''
 [[rules]]
 name = "busy-wait-noop"
 command_regex = '''\A\s*do\s+(:|true|continue)(\s|;|$)'''
+reason = "Don't poll with a shell loop. To wait for a subagent, await its completion notification (delivered automatically) or launch it with run_in_background:false. To wait for an external process (server ready, CI, a file appearing), start it with run_in_background:true and let it exit, or run a single one-shot check — not an in-shell loop."
 
 # Unbounded repetition. A single ASK approval cannot bound how many times a
 # loop body runs, so a side-effecting body (gh comment, git push, curl) runs
@@ -32,18 +33,22 @@ command_regex = '''\A\s*do\s+(:|true|continue)(\s|;|$)'''
 [[rules]]
 name = "while-loop"
 command_regex = '''\A\s*while(\s|$)'''
+reason = "Don't poll with a shell loop. To wait for a subagent, await its completion notification (delivered automatically) or launch it with run_in_background:false. To wait for an external process (server ready, CI, a file appearing), start it with run_in_background:true and let it exit, or run a single one-shot check — not an in-shell loop."
 
 [[rules]]
 name = "until-loop"
 command_regex = '''\A\s*until(\s|$)'''
+reason = "Don't poll with a shell loop. To wait for a subagent, await its completion notification (delivered automatically) or launch it with run_in_background:false. To wait for an external process (server ready, CI, a file appearing), start it with run_in_background:true and let it exit, or run a single one-shot check — not an in-shell loop."
 
 [[rules]]
 name = "for-cstyle"
 command_regex = '''\A\s*for\s*\(\('''
+reason = "Don't poll with a shell loop. To wait for a subagent, await its completion notification (delivered automatically) or launch it with run_in_background:false. To wait for an external process (server ready, CI, a file appearing), start it with run_in_background:true and let it exit, or run a single one-shot check — not an in-shell loop."
 
 [[rules]]
 name = "watch"
 command_regex = '''\A\s*watch(\s|$)'''
+reason = "Don't poll with a shell loop. To wait for a subagent, await its completion notification (delivered automatically) or launch it with run_in_background:false. To wait for an external process (server ready, CI, a file appearing), start it with run_in_background:true and let it exit, or run a single one-shot check — not an in-shell loop."
 
 [[rules]]
 name = "mkfs"
@@ -107,18 +112,22 @@ command_regex = '''gcloud\s+iam\s+service-accounts\s+keys\s+create(\s|$)'''
 [[rules]]
 name = "pkill"
 command_regex = '''^\s*pkill(\s|$)'''
+reason = "Broadcast/pattern kills terminate unintended processes. Target a specific PID (kill <pid>), or stop a background command you started with the native mechanism (KillShell for a run_in_background shell, TaskStop for a monitor) — not pkill/killall."
 
 [[rules]]
 name = "killall"
 command_regex = '''^\s*killall(\s|$)'''
+reason = "Broadcast/pattern kills terminate unintended processes. Target a specific PID (kill <pid>), or stop a background command you started with the native mechanism (KillShell for a run_in_background shell, TaskStop for a monitor) — not pkill/killall."
 
 [[rules]]
 name = "kill-broadcast"
 command_regex = '''^\s*kill\s+(\S+\s+)*-1(\s|$)'''
+reason = "Broadcast/pattern kills terminate unintended processes. Target a specific PID (kill <pid>), or stop a background command you started with the native mechanism (KillShell for a run_in_background shell, TaskStop for a monitor) — not pkill/killall."
 
 [[rules]]
 name = "xargs-pkill-killall"
 command_regex = '''^\s*xargs\s+(pkill|killall)(\s|$)'''
+reason = "Broadcast/pattern kills terminate unintended processes. Target a specific PID (kill <pid>), or stop a background command you started with the native mechanism (KillShell for a run_in_background shell, TaskStop for a monitor) — not pkill/killall."
 
 # --- Sensitive Path Deny Rules (shared by Read, Write, Edit) ---
 #

@@ -78,6 +78,23 @@ class TestDenyRules:
         assert match_deny("fswatch -r .") is None
         assert match_deny("gh pr checks 129 --watch") is None
 
+    def test_loop_rules_carry_native_wait_guidance(self):
+        for cmd in ("until false", "while true", "do :", "watch docker ps", "for (( ; ; ))"):
+            reason = match_deny(cmd).reason
+            assert reason is not None
+            assert "run_in_background" in reason
+
+    def test_kill_rules_carry_native_stop_guidance(self):
+        for cmd in ("pkill node", "killall node", "kill -1", "xargs pkill"):
+            reason = match_deny(cmd).reason
+            assert reason is not None
+            assert "KillShell" in reason
+
+    def test_security_rules_have_no_guidance_reason(self):
+        # Obviously-dangerous rules stay reason-less: no native alternative to point to.
+        assert match_deny("rm -rf /").reason is None
+        assert match_deny("sudo apt install foo").reason is None
+
     def test_runner_wrapped_loop_denied(self):
         # time/nohup are stripped so the loop/watch rules still fire.
         assert evaluate_command("nohup watch -n1 gh pr comment 1")[0] == "deny"

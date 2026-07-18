@@ -26,6 +26,28 @@ class TestBashEvaluation:
         assert decision == "deny"
         assert stage == "RULE_DENY"
 
+    def test_deny_loop_reason_guides_to_native_wait(self):
+        hook_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "until false; do sleep 1; done"},
+            "cwd": "/tmp",
+        }
+        decision, reason, stage = evaluate(hook_input)
+        assert decision == "deny"
+        assert stage == "RULE_DENY"
+        assert "run_in_background" in reason
+
+    def test_deny_kill_reason_guides_to_native_stop(self):
+        hook_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "pkill node"},
+            "cwd": "/tmp",
+        }
+        decision, reason, stage = evaluate(hook_input)
+        assert decision == "deny"
+        assert stage == "RULE_DENY"
+        assert "KillShell" in reason
+
     def test_allow_ls(self):
         hook_input = {
             "tool_name": "Bash",
