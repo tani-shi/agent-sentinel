@@ -185,6 +185,13 @@ class TestDenyRules:
         assert match_deny("echo SECRET=foo > .env") is not None
         assert match_deny("echo SECRET=foo >> .env") is not None
         assert match_deny("tee .env") is not None
+        assert match_deny("echo SECRET=foo > .env.production") is not None
+        assert match_deny("tee .env.production") is not None
+
+    def test_env_write_template_files_not_denied(self):
+        for suffix in ("example", "sample", "template", "dist"):
+            assert match_deny(f"echo FOO=bar > .env.{suffix}") is None
+            assert match_deny(f"tee .env.{suffix}") is None
 
     def test_safe_commands_not_denied(self):
         assert match_deny("ls -la") is None
@@ -752,6 +759,12 @@ class TestSensitivePathRules:
         assert match_sensitive_path("/home/user/.env") is not None
         assert match_sensitive_path("/project/.env.local") is not None
         assert match_sensitive_path("/project/.env.production") is not None
+
+    def test_env_template_files_not_denied(self):
+        for suffix in ("example", "sample", "template", "dist"):
+            assert match_sensitive_path(f"/project/.env.{suffix}") is None
+        # A backup of a template is not itself a template.
+        assert match_sensitive_path(".env.example.bak") is not None
 
     def test_envrc(self):
         assert match_sensitive_path(".envrc") is not None

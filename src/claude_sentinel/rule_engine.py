@@ -61,7 +61,7 @@ def _parse_rules(data: dict[str, Any], *, kind: str) -> RuleSet:
         ruleset.sensitive_path_rules.append(
             Rule(
                 name=entry["name"],
-                pattern=re.compile(entry["path_regex"]),
+                pattern=re.compile(_expand_fragments(entry["path_regex"], fragments)),
                 path_globs=tuple(entry.get("path_glob", [])),
             )
         )

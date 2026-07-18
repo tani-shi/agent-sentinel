@@ -31,6 +31,12 @@ DENY_RULE_TOOLS = ("Edit", "Read")
 # live runtime tool), so in-project writes keep flowing prompt-free.
 STALE_DENY_TOOLS = ["Write"]
 
+# Globs a rule once emitted but no longer does. _remove_stale_permissions derives
+# its removals from the *current* globs, so a retired glob would otherwise linger
+# in existing settings and keep denying. `**/.env.*` is retired so template env
+# files (`.env.example` …) stay writable.
+RETIRED_DENY_GLOBS = ["**/.env.*"]
+
 HOOK_ENTRIES = [
     {
         "matcher": "*",
@@ -44,6 +50,12 @@ HOOK_ENTRIES = [
 ]
 
 
+def _deny_entries(tools: tuple[str, ...] | list[str], globs: list[str]) -> list[str]:
+    """`Tool(glob)` deny entries — the one place that spells the entry syntax, so
+    the generator and the stale-entry stripper cannot drift on how it is written."""
+    return [f"{tool}({glob})" for tool in tools for glob in globs]
+
+
 def _get_managed_permissions() -> dict[str, list[str]]:
     """Get managed permission entries from rules and evaluator.
 
@@ -55,11 +67,7 @@ def _get_managed_permissions() -> dict[str, list[str]]:
     and background paths where the hook is not guaranteed to fire.
     """
     return {
-        "deny": sorted(
-            f"{tool}({glob})"
-            for tool in DENY_RULE_TOOLS
-            for glob in rule_engine.sensitive_path_globs()
-        ),
+        "deny": sorted(_deny_entries(DENY_RULE_TOOLS, rule_engine.sensitive_path_globs())),
         "allow": sorted(AUTO_ALLOW_TOOLS | FILE_TOOLS),
         "ask": sorted(ASK_TOOLS),
     }
@@ -219,14 +227,20 @@ def _remove_stale_permissions(settings: dict) -> bool:
     LEGACY_FILE_TOOLS have their deny globs and bare allow entry removed (the
     tool is gone). STALE_DENY_TOOLS keep their bare allow entry (Write is still
     a live runtime tool) and only shed their now-ignored path-scoped deny globs.
+    RETIRED_DENY_GLOBS are dropped for every tool that ever emitted them.
     """
     globs = rule_engine.sensitive_path_globs()
     removed = 0
+    removed += _remove_permissions(
+        settings, "deny", _deny_entries((*LEGACY_FILE_TOOLS, *STALE_DENY_TOOLS), globs)
+    )
     for tool in LEGACY_FILE_TOOLS:
-        removed += _remove_permissions(settings, "deny", [f"{tool}({glob})" for glob in globs])
         removed += _remove_permissions(settings, "allow", [tool])
-    for tool in STALE_DENY_TOOLS:
-        removed += _remove_permissions(settings, "deny", [f"{tool}({glob})" for glob in globs])
+    removed += _remove_permissions(
+        settings,
+        "deny",
+        _deny_entries((*DENY_RULE_TOOLS, *LEGACY_FILE_TOOLS, *STALE_DENY_TOOLS), RETIRED_DENY_GLOBS),
+    )
     return removed > 0
 
 

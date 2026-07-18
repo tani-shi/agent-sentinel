@@ -93,7 +93,7 @@ Tools with external impact (e.g. Slack send/schedule/canvas tools) require user 
 | `force-push-main` | `git push --force` / `-f` to `main`/`master` (allows `--force-with-lease`) |
 | `refspec-force-push-main` | `git push origin +main` refspec force push |
 | `push-delete-main` / `refspec-delete-main` | `git push --delete origin main`, `git push origin :main` |
-| `env-write` | Writing to `.env` files via `>`, `>>`, `tee` |
+| `env-write` | Writing to `.env` files via `>`, `>>`, `tee` (template files `.env.example`/`.sample`/`.template`/`.dist` are exempt) |
 | `dynamic-linker-hijack` | Setting `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH` |
 
 ## Sensitive path deny rules (RULE_DENY)
@@ -102,7 +102,7 @@ Sensitive files blocked from `Read`, `Write`, `Edit`, and `MultiEdit` tools. Eac
 
 | Category | Rule | Pattern |
 |----------|------|---------|
-| Env/config | `env-files` | `.env`, `.env.*` |
+| Env/config | `env-files` | `.env`, `.env.*` (committed templates `.env.example`/`.sample`/`.template`/`.dist` are exempt; the glob is only `**/.env`, so suffixed secret files rely on the hook `path_regex`) |
 | Env/config | `envrc` | `.envrc` |
 | Env/config | `secrets-files` | `secrets.{yml,yaml,json,toml}` |
 | Env/config | `terraform-vars` | `terraform.tfvars`, `terraform.tfvars.json` |
