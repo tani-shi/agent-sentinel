@@ -1,5 +1,12 @@
 # Denied commands and sensitive paths — confirmation cannot be bypassed.
 
+# @name@ tokens in command_regex and path_regex expand to these fragments, so a
+# value shared across rules is defined once and cannot drift between them.
+[fragments]
+# `.env` suffixes that are committed placeholder templates, not real secrets, so
+# writes to them are safe to allow.
+env_template_suffixes = "example|sample|template|dist"
+
 # --- Command Deny Rules ---
 
 [[rules]]
@@ -82,7 +89,7 @@ command_regex = '''git\s+push\s+.*\s:(main|master)\b'''
 
 [[rules]]
 name = "env-write"
-command_regex = '''(>|>>)\s*\.env(\s|$|\.)|tee\s+.*\.env(\s|$|\.)'''
+command_regex = '''((?:>|>>)\s*|tee\s+.*)\.env(\s|$|\.(?!(?:@env_template_suffixes@)(?:\s|$)))'''
 
 # Dynamic-linker hijacking: setting LD_PRELOAD / DYLD_INSERT_LIBRARIES (and
 # their LIBRARY_PATH siblings) injects attacker code into every dynamically
@@ -142,10 +149,17 @@ reason = "Broadcast/pattern kills terminate unintended processes. Target a speci
 
 # --- Environment / Config Files ---
 
+# The negative lookahead exempts the committed-template suffixes
+# (`.env.example`/`.sample`/`.template`/`.dist`), like private-key-files exempts
+# `.pub.pem`. The glob is only `**/.env`: globs cannot express the lookahead, and
+# keeping the `**/.env.*` catch-all would re-block the very templates it cannot
+# exempt. Tradeoff: suffixed secret env files (`.env.production` …) then lose the
+# settings.json glob deny on hook-less sub-agent/background paths, relying on
+# this path_regex alone.
 [[sensitive_path_rules]]
 name = "env-files"
-path_regex = '''(^|/)\.env(\..+)?$'''
-path_glob = ["**/.env", "**/.env.*"]
+path_regex = '''(^|/)\.env(\.(?!(?:@env_template_suffixes@)$).+)?$'''
+path_glob = ["**/.env"]
 
 [[sensitive_path_rules]]
 name = "envrc"

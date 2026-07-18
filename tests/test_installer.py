@@ -92,6 +92,25 @@ class TestInstall:
         assert not any(e.startswith("Write(") for e in settings["permissions"]["deny"])
         assert "Write" in settings["permissions"]["allow"]
 
+    def test_install_strips_retired_env_glob_deny(self, settings_file):
+        """The `**/.env.*` glob was retired so template env files (`.env.example`)
+        are writable; its stale deny entries must be shed from existing installs."""
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "permissions": {
+                        "deny": ["Edit(**/.env.*)", "Read(**/.env.*)", "Edit(**/.env)"],
+                    }
+                }
+            )
+        )
+        install(settings_file)
+
+        deny = json.loads(settings_file.read_text())["permissions"]["deny"]
+        assert "Edit(**/.env.*)" not in deny
+        assert "Read(**/.env.*)" not in deny
+        assert "Edit(**/.env)" in deny
+
     def test_install_malformed_settings(self, settings_file):
         settings_file.write_text("{not valid json")
         with pytest.raises(SystemExit, match="invalid JSON"):
@@ -136,7 +155,8 @@ class TestInstallPermissions:
         assert set(managed["deny"]).issubset(set(deny))
         for tool in ("Read", "Edit"):
             assert f"{tool}(**/.env)" in deny
-            assert f"{tool}(**/.env.*)" in deny
+            # `**/.env.*` is a retired glob, no longer generated.
+            assert f"{tool}(**/.env.*)" not in deny
             assert f"{tool}(**/.ssh/**)" in deny
             assert f"{tool}(**/.aws/**)" in deny
         # Write(...) deny rules are not honored by Claude Code's file-permission
