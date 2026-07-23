@@ -429,6 +429,65 @@ class TestAutoAllowTools:
         assert decision == "ask"
         assert stage == "TOOL_ASK"
 
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "mcp__claude_ai_Notion__notion-fetch",
+            "mcp__claude_ai_Notion__notion-search",
+            "mcp__claude_ai_Notion__notion-get-async-task",
+            "mcp__claude_ai_Notion__notion-get-comments",
+            "mcp__claude_ai_Notion__notion-get-teams",
+            "mcp__claude_ai_Notion__notion-get-users",
+            "mcp__claude_ai_Notion__notion-query-data-sources",
+            "mcp__claude_ai_Notion__notion-query-database-view",
+            "mcp__claude_ai_Notion__notion-query-meeting-notes",
+            "mcp__claude_ai_Notion__notion-download-attachment",
+        ],
+    )
+    def test_notion_mcp_read_tools_allowed(self, tool_name):
+        hook_input = {
+            "tool_name": tool_name,
+            "tool_input": {},
+        }
+        decision, reason, stage = evaluate(hook_input)
+        assert decision == "allow"
+        assert stage == "AUTO_ALLOW"
+
+    def test_notion_mcp_future_read_tool_allowed(self):
+        """New get/query/download tools matching the prefix are auto-allowed."""
+        hook_input = {
+            "tool_name": "mcp__claude_ai_Notion__notion-get-new-feature",
+            "tool_input": {},
+        }
+        decision, reason, stage = evaluate(hook_input)
+        assert decision == "allow"
+        assert stage == "AUTO_ALLOW"
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "mcp__claude_ai_Notion__notion-create-attachment",
+            "mcp__claude_ai_Notion__notion-create-comment",
+            "mcp__claude_ai_Notion__notion-create-database",
+            "mcp__claude_ai_Notion__notion-create-pages",
+            "mcp__claude_ai_Notion__notion-create-view",
+            "mcp__claude_ai_Notion__notion-duplicate-page",
+            "mcp__claude_ai_Notion__notion-move-pages",
+            "mcp__claude_ai_Notion__notion-update-data-source",
+            "mcp__claude_ai_Notion__notion-update-page",
+            "mcp__claude_ai_Notion__notion-update-view",
+        ],
+    )
+    def test_notion_mcp_write_tools_ask(self, tool_name):
+        """Write tools must require confirmation (ASK)."""
+        hook_input = {
+            "tool_name": tool_name,
+            "tool_input": {},
+        }
+        decision, reason, stage = evaluate(hook_input)
+        assert decision == "ask"
+        assert stage == "TOOL_ASK"
+
 
 class TestExternalImpactCommands:
     """Commands with external impact should be ASK, not ALLOW."""

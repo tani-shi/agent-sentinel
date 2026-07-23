@@ -17,27 +17,37 @@ AUTO_ALLOW_TOOLS = {
     "Skill",
     "WebFetch",
     "WebSearch",
+    "mcp__claude_ai_Notion__notion-fetch",
+    "mcp__claude_ai_Notion__notion-search",
+    "mcp__claude_ai_Notion__notion-get-*",
+    "mcp__claude_ai_Notion__notion-query-*",
+    "mcp__claude_ai_Notion__notion-download-*",
     "mcp__claude_ai_Slack__slack_read_*",
     "mcp__claude_ai_Slack__slack_search_*",
     "mcp__plugin_context7_context7__*",
 }
 
 # Tools that have external impact and require user confirmation.
+# Supports fnmatch glob patterns (e.g. "mcp__*__notion-create-*").
 ASK_TOOLS = {
     "mcp__claude_ai_Slack__slack_send_message",
     "mcp__claude_ai_Slack__slack_send_message_draft",
     "mcp__claude_ai_Slack__slack_schedule_message",
     "mcp__claude_ai_Slack__slack_create_canvas",
     "mcp__claude_ai_Slack__slack_update_canvas",
+    "mcp__claude_ai_Notion__notion-create-*",
+    "mcp__claude_ai_Notion__notion-update-*",
+    "mcp__claude_ai_Notion__notion-duplicate-*",
+    "mcp__claude_ai_Notion__notion-move-*",
 }
 
 # File tools evaluated through sensitive path deny rules.
 FILE_TOOLS = {"Read", "Write", "Edit"}
 
 
-def _is_auto_allowed(tool_name: str) -> bool:
-    """Check if a tool matches any AUTO_ALLOW_TOOLS entry (exact or glob)."""
-    return any(fnmatch(tool_name, pattern) for pattern in AUTO_ALLOW_TOOLS)
+def _matches(tool_name: str, patterns: set[str]) -> bool:
+    """Check if a tool matches any pattern (exact string or fnmatch glob)."""
+    return any(fnmatch(tool_name, pattern) for pattern in patterns)
 
 
 def evaluate(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
@@ -53,9 +63,9 @@ def evaluate(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
         return _evaluate_bash(tool_input, hook_input)
     elif tool_name in FILE_TOOLS:
         return _evaluate_file(tool_input)
-    elif _is_auto_allowed(tool_name):
+    elif _matches(tool_name, AUTO_ALLOW_TOOLS):
         return "allow", f"Auto-allowed tool: {tool_name}", "AUTO_ALLOW"
-    elif tool_name in ASK_TOOLS:
+    elif _matches(tool_name, ASK_TOOLS):
         return "ask", f"External impact tool requires confirmation: {tool_name}", "TOOL_ASK"
     else:
         # Unknown tool: passthrough
