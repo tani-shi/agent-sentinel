@@ -273,6 +273,10 @@ class TestDenyRules:
         assert match_deny("export MY_LD_PRELOAD=foo") is None
         assert match_deny("MY_DYLD_VAR=foo") is None
 
+    def test_ntn_auth_token(self):
+        assert match_deny("ntn auth token") is not None
+        assert match_deny("ntn auth token --verbose") is not None
+
 
 class TestAllowRules:
     def test_ls(self):
@@ -751,6 +755,26 @@ class TestAllowRules:
         assert match_allow("printf 'hello\\n'") is not None
         assert match_allow("printf '%s\\n' a b") is not None
 
+    def test_ntn_read(self):
+        assert match_allow("ntn whoami") is not None
+        assert match_allow("ntn doctor") is not None
+        assert match_allow("ntn pages get abc123") is not None
+        assert match_allow("ntn datasources query ds-1") is not None
+        assert match_allow("ntn datasources resolve db-1") is not None
+        assert match_allow("ntn files list") is not None
+        assert match_allow("ntn files ls") is not None
+        assert match_allow("ntn files get upload-1") is not None
+        assert match_allow("ntn api /v1/databases ls") is not None
+        assert match_allow("ntn api /v1/pages --spec") is not None
+
+    def test_ntn_mutate_not_allowed(self):
+        # Write subcommands must fall to ask, never auto-allow.
+        assert match_allow("ntn pages create --content x") is None
+        assert match_allow("ntn pages edit abc --content x") is None
+        assert match_allow("ntn pages trash abc") is None
+        assert match_allow("ntn files create") is None
+        assert match_allow("ntn login") is None
+
 
 class TestSensitivePathRules:
     # A. Environment / config files
@@ -849,6 +873,9 @@ class TestSensitivePathRules:
 
     def test_gh_hosts(self):
         assert match_sensitive_path("/home/user/.config/gh/hosts.yml") is not None
+
+    def test_notion_auth(self):
+        assert match_sensitive_path("/home/user/.config/notion/auth.json") is not None
 
     def test_maven_settings(self):
         assert match_sensitive_path("/home/user/.m2/settings.xml") is not None
@@ -1055,6 +1082,24 @@ class TestAskRules:
     def test_gh_api_mutate(self):
         assert match_ask("gh api repos/o/r -X POST") is not None
         assert match_ask("gh api repos/o/r --method DELETE") is not None
+
+    def test_ntn_mutate(self):
+        assert match_ask("ntn pages create --content x") is not None
+        assert match_ask("ntn pages edit abc --content x") is not None
+        assert match_ask("ntn pages trash abc") is not None
+        assert match_ask("ntn files create") is not None
+        assert match_ask("ntn login") is not None
+        assert match_ask("ntn logout") is not None
+        assert match_ask("ntn update") is not None
+        assert match_ask("ntn api /v1/pages -X POST -d @body.json") is not None
+        assert match_ask("ntn api /v1/blocks/x --method DELETE") is not None
+        assert match_ask("ntn api /v1/pages --data '{}'") is not None
+
+    def test_ntn_read_not_asked(self):
+        # Read subcommands must auto-allow, never prompt.
+        assert match_ask("ntn pages get abc") is None
+        assert match_ask("ntn datasources query ds-1") is None
+        assert match_ask("ntn whoami") is None
 
     def test_gh_workflow_mutate(self):
         assert match_ask("gh workflow run 141935446 --ref main") is not None

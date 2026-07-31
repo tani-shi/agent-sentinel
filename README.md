@@ -95,6 +95,7 @@ Tools with external impact (e.g. Slack send/schedule/canvas tools, Notion create
 | `push-delete-main` / `refspec-delete-main` | `git push --delete origin main`, `git push origin :main` |
 | `env-write` | Writing to `.env` files via `>`, `>>`, `tee` (template files `.env.example`/`.sample`/`.template`/`.dist` are exempt) |
 | `dynamic-linker-hijack` | Setting `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH` |
+| `ntn-auth-token` | `ntn auth token` — prints the Notion auth token to stdout (credential exposure) |
 
 ## Sensitive path deny rules (RULE_DENY)
 
@@ -121,6 +122,7 @@ Sensitive files blocked from `Read`, `Write`, `Edit`, and `MultiEdit` tools. Eac
 | Dev tools | `npmrc` | `.npmrc` |
 | Dev tools | `pypirc` | `.pypirc` |
 | Dev tools | `gh-hosts` | `.config/gh/hosts.yml` |
+| Dev tools | `notion-auth` | `.config/notion/auth.json` (Notion CLI file-based auth, `NOTION_KEYRING=0`) |
 | Dev tools | `maven-settings` | `.m2/settings.xml` |
 | Dev tools | `gradle-properties` | `.gradle/gradle.properties` |
 | Dev tools | `boto-config` | `.boto`, `.s3cfg` |
@@ -167,6 +169,7 @@ Common development commands are auto-approved, including:
 - Database: `sqlite3`
 - Network: `curl`/`wget` (excludes pipe-to-shell, POST/PUT/DELETE/PATCH methods, and `--data` flags)
 - Cloud: `aws` read operations (`list`, `describe`, `get`, `show`, `wait`), `gcloud` read operations (including `logging read` and `logging tail`)
+- Notion CLI (`ntn`): read operations — `whoami`, `doctor`, `pages get`, `datasources query`/`resolve`, `files get`/`list`/`ls`, and `api ... ls`/`--spec`/`--docs` (endpoint discovery/docs)
 - macOS: `launchctl` read operations (`list`, `print`, `blame`), `plutil` read (`-p`, `-lint`), `sample` (process profiling), `defaults read`, `mdfind` (Spotlight), `log show` (unified log), `fswatch` (filesystem events), `crontab -l`, `atq`
 - Process inspection: `ps`, `pgrep`, `lsof`
 - Utilities: `echo`, `pwd`, `which`, `date`, `sort`, `sed` (`sed -i` on a sensitive path is denied; see below), `awk`, `tar`, `zip`, `zipinfo`, `stat`, `env`, `printenv`
@@ -213,6 +216,7 @@ Commands that prompt user confirmation without LLM evaluation:
 - `npm run`/`yarn run`/`pnpm run` with `migrate`/`migration` — database migrations
 - Slack send/schedule/canvas tools (TOOL_ASK)
 - Notion write tools — `notion-create-*`, `notion-update-*`, `notion-duplicate-*`, `notion-move-*` (TOOL_ASK)
+- Notion CLI (`ntn`) mutations — `pages create`/`edit`/`trash`, `files create`, `login`/`logout`/`update`, and `api` calls carrying a write signal (`-X POST/PUT/DELETE/PATCH`, `-d`/`--data`, `--file`)
 
 See [`src/claude_sentinel/rules/ask.toml`](src/claude_sentinel/rules/ask.toml) for the full list.
 

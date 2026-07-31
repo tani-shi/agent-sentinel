@@ -349,3 +349,23 @@ command_regex = '''^\s*xargs\s+(rm|kill|chmod|chown|mv|dd)(\s|$)'''
 [[rules]]
 name = "eval-source"
 command_regex = '''^\s*(eval|source|\.)\s'''
+
+# --- Notion CLI (ntn) Mutations ---
+
+[[rules]]
+name = "ntn-pages-mutate"
+command_regex = '''^\s*ntn\s+pages\s+(create|edit|trash)(\s|$)'''
+
+[[rules]]
+name = "ntn-files-create"
+command_regex = '''^\s*ntn\s+files\s+create(\s|$)'''
+
+[[rules]]
+name = "ntn-session-mutate"
+command_regex = '''^\s*ntn\s+(login|logout|update)(\s|$)'''
+
+# Raw `ntn api` calls carrying a write signal: an explicit mutating method, an
+# inline body (-d/--data*), or a file upload (--file). Mirrors gh-api-mutate.
+[[rules]]
+name = "ntn-api-mutate"
+command_regex = '''^\s*ntn\s+api\s+(?=.*((-X|--method)\s+(POST|PUT|DELETE|PATCH)|(-d|--data)\S*\s|--file\s))'''
