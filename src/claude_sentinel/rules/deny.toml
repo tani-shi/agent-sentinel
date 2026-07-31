@@ -114,6 +114,12 @@ command_regex = '''gcloud\s+auth\s+print-(access|identity)-token(\s|$)'''
 name = "gcloud-service-account-keys"
 command_regex = '''gcloud\s+iam\s+service-accounts\s+keys\s+create(\s|$)'''
 
+# `ntn auth token` prints the Notion auth token to stdout, landing it in the
+# conversation context. Same exposure as gcloud-print-token.
+[[rules]]
+name = "ntn-auth-token"
+command_regex = '''ntn\s+auth\s+token(\s|$)'''
+
 # --- Process Signals (broadcast / pattern-match) ---
 
 [[rules]]
@@ -263,6 +269,12 @@ path_glob = ["**/.pypirc"]
 name = "gh-hosts"
 path_regex = '''(^|/)\.config/gh/hosts\.yml$'''
 path_glob = ["**/.config/gh/hosts.yml"]
+
+# Notion CLI file-based auth store, used when NOTION_KEYRING=0.
+[[sensitive_path_rules]]
+name = "notion-auth"
+path_regex = '''(^|/)\.config/notion/auth\.json$'''
+path_glob = ["**/.config/notion/auth.json"]
 
 [[sensitive_path_rules]]
 name = "maven-settings"

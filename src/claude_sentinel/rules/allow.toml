@@ -540,3 +540,21 @@ command_regex = '''^\s*fam\s+db\s+(read|tables)(\s|$)'''
 [[rules]]
 name = "flashspace-read"
 command_regex = '''^flashspace (get|list)-'''
+
+# --- Notion CLI (ntn) ---
+
+[[rules]]
+name = "ntn-read"
+command_regex = '''^\s*ntn\s+(whoami|doctor)(\s|$)'''
+
+[[rules]]
+name = "ntn-subcommand-read"
+command_regex = '''^\s*ntn\s+(pages\s+get|datasources\s+(query|resolve)|files\s+(get|list|ls))(\s|$)'''
+
+# `ntn api` reads are limited to endpoint discovery and docs (`ls`, `--spec`,
+# `--docs`). Raw data calls are left unlisted: Notion's read endpoints
+# (/v1/search, /v1/databases/{id}/query) use POST+body, so body presence can't
+# distinguish read from write — those fall through to the LLM judge instead.
+[[rules]]
+name = "ntn-api-read"
+command_regex = '''^\s*ntn\s+api\s+(.*\s)?(ls|--spec|--docs)(\s|$)'''
