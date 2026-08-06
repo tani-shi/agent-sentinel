@@ -111,16 +111,37 @@ class TestBashEvaluation:
         assert decision == "allow"
         assert stage == "RULE_ALLOW"
 
-    def test_aws_read_allowed(self):
-        """AWS read commands pass through narrowed ask rule to allow."""
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "aws ec2 describe-instances --region us-east-1",
+            # Read commands the earlier deny-by-default `aws-mutate` rule
+            # prompted for, taken verbatim from the evaluation log.
+            "aws --version",
+            "aws login help 2>&1 | head -40",
+            "aws logs filter-log-events --region ap-northeast-1 --log-group-name /aws/lambda/x",
+        ],
+    )
+    def test_aws_read_allowed(self, command):
         hook_input = {
             "tool_name": "Bash",
-            "tool_input": {"command": "aws ec2 describe-instances --region us-east-1"},
+            "tool_input": {"command": command},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
         assert decision == "allow"
         assert stage == "RULE_ALLOW"
+
+    def test_aws_credential_read_denied(self):
+        """Reading AWS credentials via the CLI is blocked like reading ~/.aws."""
+        hook_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "aws secretsmanager get-secret-value --secret-id x"},
+            "cwd": "/tmp",
+        }
+        decision, reason, stage = evaluate(hook_input)
+        assert decision == "deny"
+        assert stage == "RULE_DENY"
 
     def test_aws_mutate_asks(self):
         """AWS mutate commands are caught by ask rule."""

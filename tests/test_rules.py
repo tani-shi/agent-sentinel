@@ -277,6 +277,25 @@ class TestDenyRules:
         assert match_deny("ntn auth token") is not None
         assert match_deny("ntn auth token --verbose") is not None
 
+    def test_aws_credential_read(self):
+        assert match_deny("aws secretsmanager get-secret-value --secret-id x") is not None
+        assert match_deny("aws configure get aws_secret_access_key") is not None
+        assert match_deny("aws ecr get-login-password --region us-east-1") is not None
+        assert match_deny("aws sts assume-role --role-arn a --role-session-name s") is not None
+        assert match_deny("aws sts get-session-token") is not None
+        assert match_deny("aws kms decrypt --ciphertext-blob x") is not None
+        assert match_deny("aws kms generate-data-key --key-id k") is not None
+
+    def test_aws_ssm_decrypt(self):
+        assert match_deny("aws ssm get-parameter --name /p --with-decryption") is not None
+        assert match_deny("aws ssm get-parameters-by-path --path /p --with-decryption") is not None
+
+    def test_aws_read_not_denied(self):
+        assert match_deny("aws ssm get-parameter --name /p") is None
+        assert match_deny("aws sts get-caller-identity") is None
+        assert match_deny("aws secretsmanager list-secrets") is None
+        assert match_deny("aws configure list") is None
+
 
 class TestAllowRules:
     def test_ls(self):
@@ -479,6 +498,19 @@ class TestAllowRules:
         assert match_allow("aws ec2 describe-instances --region us-east-1") is not None
         assert match_allow("aws sts get-caller-identity") is not None
         assert match_allow("aws s3api list-objects") is not None
+        assert match_allow("aws logs filter-log-events --log-group-name /aws/lambda/x") is not None
+        assert match_allow("aws logs tail /aws/lambda/x") is not None
+        assert match_allow("aws s3api head-object --bucket b --key k") is not None
+        assert match_allow("aws cloudformation validate-template --template-body x") is not None
+
+    def test_aws_help(self):
+        assert match_allow("aws help") is not None
+        assert match_allow("aws ec2 help") is not None
+        assert match_allow("aws ec2 describe-instances help") is not None
+
+    def test_aws_s3_read(self):
+        assert match_allow("aws s3 ls") is not None
+        assert match_allow("aws s3 ls s3://bucket") is not None
 
     def test_cd(self):
         assert match_allow("cd src") is not None
@@ -1234,8 +1266,23 @@ class TestAskRules:
 
     # --- AWS mutation ---
     def test_aws_mutate(self):
-        assert match_ask("aws s3 cp file s3://bucket") is not None
         assert match_ask("aws ec2 run-instances") is not None
+        assert match_ask("aws ec2 create-snapshot --volume-id vol-1") is not None
+        assert match_ask("aws iam delete-user --user-name u") is not None
+        assert match_ask("aws dynamodb put-item --table-name t") is not None
+        assert match_ask("aws lambda invoke --function-name f out.json") is not None
+        assert match_ask("aws ecs execute-command --command sh") is not None
+        assert match_ask("aws configure set region us-east-1") is not None
+
+    def test_aws_ssm_remote_execution(self):
+        assert match_ask("aws ssm send-command --document-name AWS-RunShellScript") is not None
+        assert match_ask("aws ssm start-session --target i-1") is not None
+
+    def test_aws_s3_mutate(self):
+        assert match_ask("aws s3 cp file s3://bucket") is not None
+        assert match_ask("aws s3 sync . s3://bucket") is not None
+        assert match_ask("aws s3 rm s3://bucket/key") is not None
+        assert match_ask("aws s3 mb s3://bucket") is not None
 
     def test_aws_mutate_excludes_read(self):
         assert match_ask("aws s3 list-buckets") is None
@@ -1243,6 +1290,10 @@ class TestAskRules:
         assert match_ask("aws sts get-caller-identity") is None
         assert match_ask("aws s3api list-objects") is None
         assert match_ask("aws s3api wait object-exists") is None
+        assert match_ask("aws s3 ls s3://bucket") is None
+        assert match_ask("aws logs filter-log-events --log-group-name /x") is None
+        assert match_ask("aws ec2 help") is None
+        assert match_ask("aws --version") is None
 
     # --- Make with external-impact targets ---
     def test_make_publish_release(self):

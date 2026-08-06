@@ -383,11 +383,15 @@ command_regex = '''^\s*firebase\s+(emulators:(start|exec)|serve|init|functions:l
 
 [[rules]]
 name = "aws-read"
-command_regex = '''^\s*aws\s+\S+\s+(list|describe|get|show|wait)(-\w+)*(\s|$)'''
+command_regex = '''^\s*aws\s+\S+\s+(list|describe|get|show|wait|head|filter|tail|search|scan|query|lookup|count|check|validate|estimate|preview)(-\w+)*(\s|$)'''
 
 [[rules]]
-name = "aws-sts-read"
-command_regex = '''^\s*aws\s+sts\s+get-caller-identity(\s|$)'''
+name = "aws-help"
+command_regex = '''^\s*aws\s+(\S+\s+){0,2}help(\s|$)'''
+
+[[rules]]
+name = "aws-s3-read"
+command_regex = '''^\s*aws\s+s3\s+ls(\s|$)'''
 
 # --- Terraform ---
 

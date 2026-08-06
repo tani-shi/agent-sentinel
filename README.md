@@ -96,6 +96,8 @@ Tools with external impact (e.g. Slack send/schedule/canvas tools, Notion create
 | `env-write` | Writing to `.env` files via `>`, `>>`, `tee` (template files `.env.example`/`.sample`/`.template`/`.dist` are exempt) |
 | `dynamic-linker-hijack` | Setting `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH` |
 | `ntn-auth-token` | `ntn auth token` — prints the Notion auth token to stdout (credential exposure) |
+| `aws-credential-read` | `aws secretsmanager get-secret-value`, `ecr get-login-password`, `configure get`, `sts get-session-token` / `assume-role`, `kms decrypt` / `generate-data-key` — print AWS credentials to stdout |
+| `aws-ssm-decrypt` | `aws ssm get-parameter(s)` with `--with-decryption` — decrypts a SecureString to stdout |
 
 ## Sensitive path deny rules (RULE_DENY)
 
@@ -168,7 +170,7 @@ Common development commands are auto-approved, including:
 - Containers: `docker` (safe subcommands only, excludes `push`; `docker compose exec`/`run` require confirmation)
 - Database: `sqlite3`
 - Network: `curl`/`wget` (excludes pipe-to-shell, POST/PUT/DELETE/PATCH methods, and `--data` flags)
-- Cloud: `aws` read operations (`list`, `describe`, `get`, `show`, `wait`), `gcloud` read operations (including `logging read` and `logging tail`)
+- Cloud: `aws` read operations (`list`, `describe`, `get`, `show`, `wait`, `head`, `filter`, `tail`, `search`, `scan`, `query`, `lookup`, `count`, `check`, `validate`, `estimate`, `preview`, plus `aws s3 ls` and `aws … help`; credential-printing `get` operations are denied — see below), `gcloud` read operations (including `logging read` and `logging tail`)
 - Notion CLI (`ntn`): read operations — `whoami`, `doctor`, `pages get`, `datasources query`/`resolve`, `files get`/`list`/`ls`, and `api ... ls`/`--spec`/`--docs` (endpoint discovery/docs)
 - macOS: `launchctl` read operations (`list`, `print`, `blame`), `plutil` read (`-p`, `-lint`), `sample` (process profiling), `defaults read`, `mdfind` (Spotlight), `log show` (unified log), `fswatch` (filesystem events), `crontab -l`, `atq`
 - Process inspection: `ps`, `pgrep`, `lsof`
@@ -212,7 +214,7 @@ Commands that prompt user confirmation without LLM evaluation:
 - `git push --force` / `-f`, `git push origin +branch`, `git push --delete` / `origin :branch` (non-main; `--force-with-lease` is allowed)
 - `curl`/`wget` with `-X POST/PUT/DELETE/PATCH` or `--data` flags — HTTP mutations. Mutations aimed exclusively at a literal loopback host (`localhost`, `127.0.0.1`, `[::1]`) skip ASK and defer to the LLM judge instead, provided the command contains no other host (including bare scheme-less args like `evil.com`, which curl would POST to), no `$`/backtick expansion, and no reroute/second-request flags (`-L`, `--location`, `--resolve`, `--connect-to`, `--proxy`, `--preproxy`, `--interface`, `--dns-*`, `--socks*`, `--next`, `-x`, `-K`, `--config`)
 - `gcloud ... create/delete/deploy/update` etc. — Google Cloud mutations
-- `aws ...` — AWS CLI (catch-all; read ops are allowed by ALLOW rules)
+- `aws ... create/delete/put/update/send/invoke/run/deploy` etc. and `aws s3 cp/mv/rm/sync/mb/rb/website` — AWS mutations
 - `npm run`/`yarn run`/`pnpm run` with `migrate`/`migration` — database migrations
 - Slack send/schedule/canvas tools (TOOL_ASK)
 - Notion write tools — `notion-create-*`, `notion-update-*`, `notion-duplicate-*`, `notion-move-*` (TOOL_ASK)
