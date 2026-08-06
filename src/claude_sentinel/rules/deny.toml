@@ -120,6 +120,20 @@ command_regex = '''gcloud\s+iam\s+service-accounts\s+keys\s+create(\s|$)'''
 name = "ntn-auth-token"
 command_regex = '''ntn\s+auth\s+token(\s|$)'''
 
+# The AWS analogues of gcloud-secrets-access / gcloud-print-token. The allow
+# rule `aws-read` waves through anything whose verb starts with `get`, so
+# without these the same credentials the `aws-dir` path rule protects would be
+# readable through the CLI.
+[[rules]]
+name = "aws-credential-read"
+command_regex = '''aws\s+(secretsmanager\s+get-secret-value|ecr\s+get-login-password|configure\s+get|sts\s+(get-session-token|assume-role\S*)|kms\s+(decrypt|generate-data-key\S*))(\s|$)'''
+reason = "Prints AWS credentials to stdout, landing them in the conversation context. Reading ~/.aws/credentials directly is blocked for the same reason. Reference the secret by ARN without materializing its value, or have the user run the command themselves."
+
+[[rules]]
+name = "aws-ssm-decrypt"
+command_regex = '''aws\s+ssm\s+get-parameters?(-by-path)?(?=\s)(?=.*\s--with-decryption(\s|$))'''
+reason = "Decrypts a SecureString parameter to stdout. Read the parameter without --with-decryption to confirm it exists, or have the user run the command themselves."
+
 # --- Process Signals (broadcast / pattern-match) ---
 
 [[rules]]

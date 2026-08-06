@@ -200,7 +200,11 @@ command_regex = '''^\s*gcloud\s+pubsub\s+subscriptions\s+pull(\s|$)'''
 
 [[rules]]
 name = "aws-mutate"
-command_regex = '''^\s*aws\s+(?!\S+\s+(list|describe|get|show|wait)(-\w+)*(\s|$))(?!sts\s+get-caller-identity(\s|$))'''
+command_regex = '''^\s*aws\s+\S+\s+(create|delete|put|update|modify|set|add|attach|detach|associate|disassociate|run|start|stop|terminate|reboot|register|deregister|enable|disable|authorize|revoke|tag|untag|copy|restore|import|publish|send|invoke|execute|apply|cancel|accept|reject|replace|reset|purchase|request|release|allocate|deploy|upload|move|abort|rotate|resize|upgrade|downgrade|activate|deactivate|promote|retry|provision|initiate|submit|schedule|complete)(-\w+)*(\s|$)'''
+
+[[rules]]
+name = "aws-s3-mutate"
+command_regex = '''^\s*aws\s+s3\s+(cp|mv|rm|sync|mb|rb|website)(\s|$)'''
 
 # --- Firebase Mutations ---
 
