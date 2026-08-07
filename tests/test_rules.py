@@ -403,6 +403,7 @@ class TestAllowRules:
         # to mirror the terraform-read allow rule.
         for cmd in (
             "make tf-fmt",
+            "make tf-lint",
             "make tf-validate",
             "make tf-plan",
             "make tf-init",
