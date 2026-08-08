@@ -57,7 +57,7 @@ command_regex = '''^\s*helm\s+(install|upgrade|uninstall|rollback)(\s|$)'''
 
 [[rules]]
 name = "make-deploy"
-command_regex = '''^\s*make\s+(?!(tf|terraform)-(validate|plan|fmt|init|output|show|state-list|state-show|workspace-list|workspace-show|workspace-select|providers|version|graph)(\s|$))((re|un|pre|post)?deploy([-_][\w-]*)?|tf[\w-]*|terraform-[\w-]*)(\s|$)'''
+command_regex = '''^\s*make\s+(?!(tf|terraform)-(validate|plan|fmt|lint|init|output|show|state-list|state-show|workspace-list|workspace-show|workspace-select|providers|version|graph)(\s|$))((re|un|pre|post)?deploy([-_][\w-]*)?|tf[\w-]*|terraform-[\w-]*)(\s|$)'''
 
 [[rules]]
 name = "make-sync"
