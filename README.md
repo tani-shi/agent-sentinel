@@ -160,7 +160,7 @@ Common development commands are auto-approved, including:
 
 - Shell: Bash comments (`#`), shell constructs (`for`, `while`, `if`, `case`, `do`/`done`, `then`/`else`/`fi`, `esac`), `pushd`/`popd`, `zsh`/`bash`/`sh` invocations
 - File operations: `ls`, `cat`, `head`, `tail`, `find`, `grep`, `cp`, `mv`, `mkdir`, `touch`, `rm` (non-recursive only; `rm -r`/`rm -rf` require confirmation), `trash`
-- Git: `status`, `log`, `diff`, `add`, `commit`, `revert`, `push` (with `--force-with-lease`), etc. (destructive ops like `reset --hard`, `checkout --`, `clean` require confirmation)
+- Git: `status`, `log`, `diff`, `add`, `commit`, `revert`, `push` (with `--force-with-lease`), `switch`, `restore --staged`, and `discard` — which snapshots the worktree to `refs/discard/*` before destroying it, so no prompt is needed (destructive ops like `reset --hard`, `restore` into the worktree, `switch -f`, `clean` require confirmation)
 - Build tools: `make` (any target; dangerous targets like `deploy`/`publish`/`release`/`push`/`upgrade`/`tf-*`/`terraform-*` are escalated to ASK), `cargo` (safe subcommands only), `go build`, `node`, `bun` (excludes `bun x`), `python`, `uv` (excludes `publish`), `pip` read (`show`/`list`/`freeze`/`check`/`search`/`config get`)
 - Package managers: `npm`/`yarn`/`pnpm` (safe subcommands only, excludes `publish`; `run` allows `test`/`build`/`lint`/`cli`/etc., excludes `deploy`/`publish`/`release`/`push`); `npx`/`pnpx`/`bunx` for safe dev tools (`prettier`, `tsc`, `eslint`, `biome`, `prisma`, `vitest`, `jest`, `playwright`, `shadcn`, `next`, `vite`, etc.; unknown packages require confirmation)
 - Containers: `docker` (safe subcommands only, excludes `push`; `docker compose exec`/`run` require confirmation)
@@ -179,9 +179,13 @@ See [`src/claude_sentinel/rules/allow.toml`](src/claude_sentinel/rules/allow.tom
 
 Commands that prompt user confirmation without LLM evaluation:
 
+† These rules carry `deny_if = "git-alias-discard"`: they escalate from ASK to DENY where `git config --get alias.discard` resolves, and the denial names `git switch`, `git restore --source= --staged`, and `git discard` as the replacements. Without that alias the rules stay ASK, so a command is never blocked with no alternative to reach for. `claude-sentinel rules --kind ask` marks them.
+
 - `rm -r` / `rm -rf` / `rm --recursive` — recursive file deletion
 - `git reset --hard` — discard uncommitted changes
-- `git checkout -- <path>` — discard file changes
+- `git checkout` (all forms) — bundles branch switching with destructive file restore †
+- `git restore <path>` (worktree form) — overwrite uncommitted work; `git restore --staged` moves the index only and stays allowed †
+- `git switch -f` / `--discard-changes` — discard file changes while switching
 - `git clean` — delete untracked files
 - `osascript` — AppleScript execution (GUI control, keystrokes)
 - `docker compose exec` / `docker compose run` — arbitrary command execution in containers
@@ -333,7 +337,7 @@ When `LLM_JUDGE` fallthroughs pile up in the evaluation log, refresh `allow.toml
 1. `make update-rules` launches Claude Code in **plan mode** with the first prompt set to `/update-rules` — equivalent to running `claude --permission-mode plan -- "/update-rules"`. (You can also start `claude` yourself and type `/update-rules` manually.) The slash command is defined in `.claude/commands/update-rules.md` and drives Claude through the workflow: fetch the LLM_JUDGE log via `claude-sentinel log --json`, fetch existing rules via `claude-sentinel rules --json`, group records by *intent* (not surface form), and propose ALLOW / ASK candidates with rationale and decision tally.
 2. **Iterate.** Tell Claude things like "drop #3", "narrow #5 to `make test:*`", "split #7 into two rules", "this should be ASK not ALLOW". Claude refines until you say "apply".
 3. On approval Claude **edits the TOML files directly**, inserting each new rule into the appropriate `# --- Title Case Section Name ---` section of `allow.toml`/`ask.toml` (or creating a new section when none fits), and adds matching assertions to `tests/test_rules.py`. `deny.toml` is never edited automatically — DENY candidates are surfaced for manual review only.
-4. Claude runs `make check` to confirm the new rules and tests pass, then shows `git diff src/claude_sentinel/rules/ tests/test_rules.py`. Revert anything you disagree with (`git checkout -- <file>`).
+4. Claude runs `make check` to confirm the new rules and tests pass, then shows `git diff src/claude_sentinel/rules/ tests/test_rules.py`. Revert anything you disagree with (`git discard <file>`, or `git restore <file>` without the alias).
 5. Commit the approved changes.
 
 Lower-level pieces if you want them:

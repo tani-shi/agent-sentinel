@@ -313,6 +313,24 @@ command_regex = '''^\s*git\s+(-C\s+\S+\s+)?reset\s+--hard'''
 [[rules]]
 name = "git-checkout"
 command_regex = '''^\s*git\s+(-C\s+\S+\s+)?checkout(\s|$)'''
+deny_if = "git-alias-discard"
+reason = "`git checkout` bundles branch switching with destructive file restore. Switch branches with `git switch` (`-c` to create, `--detach` for a detached HEAD), stage a file from another revision with `git restore --source=<rev> --staged`, and discard working-tree changes with `git discard`, which snapshots them to refs/discard/* first."
+
+# `-S` is `--staged` while `-s` is `--source`, and rules compile
+# case-sensitively: widening to `-[sS]` would exempt a worktree-overwriting
+# `git restore -s <rev>`.
+[[rules]]
+name = "git-restore-worktree"
+command_regex = '''^\s*git\s+(-C\s+\S+\s+)?restore(?=\s)(?!(?=.*\s(--staged|-S)(\s|$))(?!.*\s(--worktree|-W)(\s|$)))'''
+deny_if = "git-alias-discard"
+reason = "Restoring into the working tree overwrites uncommitted work with no way back. Use `git discard [<pathspec>...]` to reset to HEAD or `git discard --source=<rev> [<pathspec>...]` to reset to another revision; both snapshot the current state to refs/discard/* first, so `git discard --undo` brings it back. `git restore --staged` needs no replacement — it moves the index only."
+
+# `git switch -C` (force-create a branch) is not here: it leaves the worktree
+# alone, and the branch move is recoverable through the reflog. The `(\s|$)`
+# terminator keeps `--force-create` — the long spelling of `-C` — unmatched.
+[[rules]]
+name = "git-switch-force"
+command_regex = '''^\s*git\s+(-C\s+\S+\s+)?switch(?=\s)(?=.*\s(--force|--discard-changes|-[a-zA-Z]*f[a-zA-Z]*)(\s|$))'''
 
 [[rules]]
 name = "git-clean"

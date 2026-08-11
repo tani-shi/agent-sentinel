@@ -201,6 +201,12 @@ command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(status|log|diff|branch|show|rev-pars
 name = "git-local-ops"
 command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(add|switch|stash|pull|fetch|rebase|merge|cherry-pick|reset|restore|revert)(\s|$)'''
 
+# `git discard` snapshots the worktree to refs/discard/* before destroying it,
+# so the discard is recoverable without a prompt.
+[[rules]]
+name = "git-discard"
+command_regex = '''^\s*git\s+(-C\s+\S+\s+)?discard(\s|$)'''
+
 [[rules]]
 name = "git-read-extra"
 command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(submodule|ls-files|ls-tree|ls-remote|describe|name-rev|shortlog|blame|grep|tag|reflog|config\s+(--get|--list|list))(\s|$)'''
