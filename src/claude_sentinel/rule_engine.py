@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import subprocess
 import tomllib
 from dataclasses import dataclass, field
+from functools import cache
 from importlib import resources
 from typing import Any, Literal, NamedTuple
 
@@ -22,6 +24,7 @@ class Rule:
     pattern: re.Pattern[str]
     path_globs: tuple[str, ...] = ()
     reason: str | None = None
+    deny_if: str | None = None
 
 
 @dataclass
@@ -55,6 +58,7 @@ def _parse_rules(data: dict[str, Any], *, kind: str) -> RuleSet:
                 name=entry["name"],
                 pattern=re.compile(_expand_fragments(entry["command_regex"], fragments), flags),
                 reason=entry.get("reason"),
+                deny_if=entry.get("deny_if"),
             )
         )
     for entry in data.get("sensitive_path_rules", []):
@@ -193,6 +197,7 @@ def reset_cache() -> None:
     _deny_rules = None
     _allow_rules = None
     _ask_rules = None
+    _git_alias_discard.cache_clear()
 
 
 # --- Bash command splitter ----------------------------------------------------
@@ -808,6 +813,33 @@ def _is_within(target: str, root: str) -> bool:
         return False
 
 
+@cache
+def _git_alias_discard(cwd: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", "alias.discard"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _ask_or_deny(rule: Rule, cwd: str) -> Literal["ask", "deny"]:
+    """Verdict for a matched ASK rule.
+
+    A rule carrying ``deny_if`` escalates to DENY only where the replacement its
+    ``reason`` names exists, so a blocked command is never left without an
+    alternative.
+    """
+    if rule.deny_if == "git-alias-discard" and _git_alias_discard(cwd):
+        return "deny"
+    return "ask"
+
+
 def _evaluate_segment(segment: str, cwd: str) -> tuple[str, Rule | None, list[str]]:
     """Evaluate a single segment through DENY -> ASK -> interpreter escalation
     -> ALLOW.
@@ -826,7 +858,7 @@ def _evaluate_segment(segment: str, cwd: str) -> tuple[str, Rule | None, list[st
         return "deny", deny, []
     ask = match_ask(segment)
     if ask:
-        return "ask", ask, []
+        return _ask_or_deny(ask, cwd), ask, []
     kind, paths = _interpreter_escalation(segment, cwd)
     if kind is not None:
         return kind, None, paths
@@ -856,8 +888,9 @@ def _deny_reason(rule: Rule) -> str:
     """Deny reason surfaced to Claude, with the rule's guidance appended.
 
     A rule's optional ``reason`` redirects Claude to the native alternative
-    (subagent completion notification, run_in_background, KillShell/TaskStop)
-    so a reason-less block does not push it toward a bypass.
+    (subagent completion notification, run_in_background, KillShell/TaskStop,
+    the recoverable equivalent an escalated ask rule names) so a reason-less
+    block does not push it toward a bypass.
     """
     base = f"Blocked by deny rule: {rule.name}"
     return f"{base}. {rule.reason}" if rule.reason else base
@@ -892,6 +925,8 @@ def evaluate_bash_command(command: str, cwd: str | None = None) -> BashEvaluatio
             return BashEvaluation("deny", _deny_reason(deny))
         ask = match_ask(command)
         if ask:
+            if _ask_or_deny(ask, cwd) == "deny":
+                return BashEvaluation("deny", _deny_reason(ask))
             return BashEvaluation("ask", f"Matched ask rule: {ask.name}")
         return BashEvaluation("llm", "Unparseable bash; deferring to LLM judge")
     if not segments:
