@@ -73,6 +73,17 @@ def _get_managed_permissions() -> dict[str, list[str]]:
     }
 
 
+def _is_sentinel_hook(hook: dict) -> bool:
+    """Whether a hook entry runs claude-sentinel, directly or through a wrapper.
+
+    Matching the command string exactly would miss a wrapper script such as
+    `zsh ~/.claude/scripts/claude-sentinel-wrapper.zsh`, leaving install to add
+    a second hook that evaluates every tool call again and uninstall unable to
+    remove either.
+    """
+    return "claude-sentinel" in hook.get("command", "")
+
+
 def install(settings_path: Path | None = None) -> str:
     """Install claude-sentinel hooks and permissions into Claude Code settings.
 
@@ -103,9 +114,7 @@ def install(settings_path: Path | None = None) -> str:
     hooks = settings.setdefault("hooks", {})
     existing = hooks.get(HOOK_EVENT, [])
     hooks_installed = not any(
-        hook.get("command") == "claude-sentinel"
-        for entry in existing
-        for hook in entry.get("hooks", [])
+        _is_sentinel_hook(hook) for entry in existing for hook in entry.get("hooks", [])
     )
     if hooks_installed:
         existing.extend(HOOK_ENTRIES)
@@ -210,7 +219,7 @@ def _remove_hook(settings: dict, event: str) -> bool:
     filtered = [
         entry
         for entry in existing
-        if not any(hook.get("command") == "claude-sentinel" for hook in entry.get("hooks", []))
+        if not any(_is_sentinel_hook(hook) for hook in entry.get("hooks", []))
     ]
     if len(filtered) == len(existing):
         return False
@@ -239,7 +248,9 @@ def _remove_stale_permissions(settings: dict) -> bool:
     removed += _remove_permissions(
         settings,
         "deny",
-        _deny_entries((*DENY_RULE_TOOLS, *LEGACY_FILE_TOOLS, *STALE_DENY_TOOLS), RETIRED_DENY_GLOBS),
+        _deny_entries(
+            (*DENY_RULE_TOOLS, *LEGACY_FILE_TOOLS, *STALE_DENY_TOOLS), RETIRED_DENY_GLOBS
+        ),
     )
     return removed > 0
 
