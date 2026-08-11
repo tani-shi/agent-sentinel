@@ -10,6 +10,18 @@ from claude_sentinel.installer import (
     uninstall,
 )
 
+WRAPPER_COMMAND = "zsh ~/.claude/scripts/claude-sentinel-wrapper.zsh"
+
+
+def _settings_with_wrapper_hook():
+    return {
+        "hooks": {
+            "PreToolUse": [
+                {"matcher": "*", "hooks": [{"type": "command", "command": WRAPPER_COMMAND}]}
+            ]
+        }
+    }
+
 
 @pytest.fixture
 def settings_file(tmp_path):
@@ -133,6 +145,16 @@ class TestInstall:
 
         settings = json.loads(settings_file.read_text())
         assert len(settings["hooks"]["PreToolUse"]) == 1
+
+    def test_install_recognizes_wrapper_hook(self, settings_file):
+        settings_file.write_text(json.dumps(_settings_with_wrapper_hook()))
+        msg = install(settings_file)
+        assert "hooks: already installed" in msg
+
+        settings = json.loads(settings_file.read_text())
+        entries = settings["hooks"]["PreToolUse"]
+        assert len(entries) == 1
+        assert entries[0]["hooks"][0]["command"] == WRAPPER_COMMAND
 
     def test_install_creates_backup(self, settings_file):
         settings_file.write_text(json.dumps({"existing": True}))
@@ -259,12 +281,13 @@ class TestUninstall:
         msg = uninstall(settings_file)
         assert "not found" in msg
 
-    def test_uninstall_preserves_other_hooks(self, settings_file):
+    @pytest.mark.parametrize("sentinel_command", ["claude-sentinel", WRAPPER_COMMAND])
+    def test_uninstall_preserves_other_hooks(self, settings_file, sentinel_command):
         settings = {
             "hooks": {
                 "PreToolUse": [
                     {"matcher": "*", "hooks": [{"type": "command", "command": "other-hook"}]},
-                    {"matcher": "*", "hooks": [{"type": "command", "command": "claude-sentinel"}]},
+                    {"matcher": "*", "hooks": [{"type": "command", "command": sentinel_command}]},
                 ]
             }
         }
@@ -275,6 +298,23 @@ class TestUninstall:
         entries = result["hooks"]["PreToolUse"]
         assert len(entries) == 1
         assert entries[0]["hooks"][0]["command"] == "other-hook"
+
+    def test_uninstall_removes_every_event(self, settings_file):
+        sentinel = {"matcher": "*", "hooks": [{"type": "command", "command": "claude-sentinel"}]}
+        settings_file.write_text(
+            json.dumps({"hooks": {"PreToolUse": [sentinel], "PermissionRequest": [sentinel]}})
+        )
+        uninstall(settings_file)
+
+        settings = json.loads(settings_file.read_text())
+        assert settings.get("hooks", {}) == {}
+
+    def test_uninstall_removes_wrapper_hook(self, settings_file):
+        settings_file.write_text(json.dumps(_settings_with_wrapper_hook()))
+        uninstall(settings_file)
+
+        settings = json.loads(settings_file.read_text())
+        assert "PreToolUse" not in settings.get("hooks", {})
 
     def test_uninstall_removes_permissions(self, settings_file, managed):
         install(settings_file)
@@ -293,9 +333,7 @@ class TestUninstall:
         # A legacy install left Write(...) deny globs the current managed set no
         # longer enumerates; uninstall must still shed them.
         settings_file.write_text(
-            json.dumps(
-                {"permissions": {"deny": ["Write(**/.env)", "Write(**/.ssh/**)"]}}
-            )
+            json.dumps({"permissions": {"deny": ["Write(**/.env)", "Write(**/.ssh/**)"]}})
         )
         uninstall(settings_file)
 
