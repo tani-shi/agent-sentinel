@@ -108,7 +108,9 @@ def install(settings_path: Path | None = None) -> str:
         perm_added[key] = _merge_permissions(settings, key, managed[key])
 
     # Drop any hook left by an earlier layout so it does not fire in parallel.
-    legacy_removed = any(_remove_hook(settings, event) for event in LEGACY_HOOK_EVENTS)
+    legacy_removed = False
+    for event in LEGACY_HOOK_EVENTS:
+        legacy_removed |= _remove_hook(settings, event)
 
     # Merge hooks
     hooks = settings.setdefault("hooks", {})
@@ -180,10 +182,12 @@ def uninstall(settings_path: Path | None = None) -> str:
     if "permissions" in settings and not settings["permissions"]:
         del settings["permissions"]
 
-    # Remove hooks (including any left by an earlier layout)
-    hooks_removed = any(
-        _remove_hook(settings, event) for event in (HOOK_EVENT, *LEGACY_HOOK_EVENTS)
-    )
+    # Remove hooks (including any left by an earlier layout). Accumulating in a
+    # loop rather than `any(...)`: the generator form stops at the first removal,
+    # stranding a hook on every later event.
+    hooks_removed = False
+    for event in (HOOK_EVENT, *LEGACY_HOOK_EVENTS):
+        hooks_removed |= _remove_hook(settings, event)
 
     any_changes = hooks_removed or stale_removed or any(v > 0 for v in perm_removed.values())
     if not any_changes:

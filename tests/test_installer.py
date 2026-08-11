@@ -299,6 +299,16 @@ class TestUninstall:
         assert len(entries) == 1
         assert entries[0]["hooks"][0]["command"] == "other-hook"
 
+    def test_uninstall_removes_every_event(self, settings_file):
+        sentinel = {"matcher": "*", "hooks": [{"type": "command", "command": "claude-sentinel"}]}
+        settings_file.write_text(
+            json.dumps({"hooks": {"PreToolUse": [sentinel], "PermissionRequest": [sentinel]}})
+        )
+        uninstall(settings_file)
+
+        settings = json.loads(settings_file.read_text())
+        assert settings.get("hooks", {}) == {}
+
     def test_uninstall_removes_wrapper_hook(self, settings_file):
         settings_file.write_text(json.dumps(_settings_with_wrapper_hook()))
         uninstall(settings_file)
