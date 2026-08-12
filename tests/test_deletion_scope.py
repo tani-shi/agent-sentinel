@@ -1,25 +1,32 @@
 import shutil
 import subprocess
+from functools import cache
 
 import pytest
 
-from claude_sentinel import deletion_scope
+from claude_sentinel import deletion_scope, git_probe
 from claude_sentinel.deletion_scope import classify
 from claude_sentinel.rule_engine import evaluate_command
 
 
 @pytest.fixture(autouse=True)
 def clear_probe_cache():
-    deletion_scope.reset_cache()
+    deletion_scope.reset_temp_roots()
+    git_probe.reset_probes()
     yield
-    deletion_scope.reset_cache()
+    deletion_scope.reset_temp_roots()
+    git_probe.reset_probes()
 
 
 @pytest.fixture
 def no_temp_roots(monkeypatch):
     """Suppress the temp scope: pytest's tmp_path lives under a temp root, where
-    the temp scope would answer before git is ever consulted."""
-    monkeypatch.setattr(deletion_scope, "_temp_roots_cache", ())
+    the temp scope would answer before git is ever consulted.
+
+    The replacement is cached like the real probe, so the autouse reset still
+    finds a ``cache_clear`` on it.
+    """
+    monkeypatch.setattr(deletion_scope, "_temp_roots", cache(lambda: ()))
 
 
 class TestTempScope:
@@ -48,12 +55,12 @@ class TestTempScope:
 
     def test_tmpdir_variable_resolved(self, monkeypatch):
         monkeypatch.setenv("TMPDIR", "/private/tmp/session-tmp")
-        deletion_scope.reset_cache()
+        deletion_scope.reset_temp_roots()
         assert classify("rm -rf $TMPDIR/probe", self.CWD, {}) == deletion_scope._TEMP_SCOPE
 
     def test_tmpdir_root_itself_denied(self, monkeypatch):
         monkeypatch.setenv("TMPDIR", "/private/tmp/session-tmp")
-        deletion_scope.reset_cache()
+        deletion_scope.reset_temp_roots()
         assert classify("rm -rf $TMPDIR", self.CWD, {}) == deletion_scope._TEMP_ROOT
 
     @pytest.mark.parametrize(
@@ -116,6 +123,31 @@ class TestTempScope:
         assert classify(segment, self.CWD, {}) == deletion_scope._TEMP_SCOPE
 
 
+class TestRootTarget:
+    """The filesystem root and the home directory, whatever the command line does
+    to hide them from the `rm-rf-root` regex."""
+
+    CWD = "/proj"
+
+    @pytest.mark.parametrize(
+        "segment",
+        [
+            "rm -rf /",
+            "rm -rf --no-preserve-root /",
+            "rm -rf -v /",
+            "rm -rf ~",
+            "rm -rf ~/",
+            "rm -rf $HOME",
+            "rm -rf ${HOME}/",
+        ],
+    )
+    def test_root_target_denied(self, segment):
+        assert classify(segment, self.CWD, {}) == deletion_scope._ROOT_TARGET
+
+    def test_path_under_home_is_not_the_root(self):
+        assert classify("rm -rf $HOME/projects/build", self.CWD, {}) is None
+
+
 class TestUnexpandedWord:
     """A word the shell expands into path names reaches an unknown set of files,
     so the scope declines to speak for it."""
@@ -152,13 +184,14 @@ class TestProjectScope:
         run("config", "user.name", "test")
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "main.py").write_text("x = 1\n")
-        (tmp_path / ".gitignore").write_text("build/\n")
+        (tmp_path / ".gitignore").write_text("build/\n.env\n")
         run("add", "-A")
         run("commit", "-m", "initial")
         (tmp_path / "build").mkdir()
         (tmp_path / "build" / "out.js").write_text("\n")
         (tmp_path / "draft").mkdir()
         (tmp_path / "draft" / "notes.md").write_text("\n")
+        (tmp_path / ".env").write_text("SECRET=1\n")
         return tmp_path
 
     def test_tracked_path_denied(self, repo):
@@ -169,6 +202,13 @@ class TestProjectScope:
 
     def test_ignored_path_allowed(self, repo):
         assert classify("rm -rf build", str(repo), {}) == deletion_scope._IGNORED_PATH
+
+    def test_ignored_secret_denied(self, repo):
+        # `.env` is ignored like build output, so the scope alone would allow it;
+        # the deny stage runs first and stops every secret before it is asked.
+        assert classify("rm -rf .env", str(repo), {}) == deletion_scope._IGNORED_PATH
+        assert evaluate_command("rm -rf .env", str(repo))[0] == "deny"
+        assert evaluate_command("rm -rf build .env", str(repo))[0] == "deny"
 
     def test_missing_path_allowed(self, repo):
         assert classify("rm -rf dist", str(repo), {}) == deletion_scope._MISSING_PATH
@@ -186,6 +226,13 @@ class TestProjectScope:
 
     def test_glob_target_asks(self, repo):
         assert classify("rm -rf ./*", str(repo), {}) is None
+
+    def test_declined_probe_asks(self, repo, monkeypatch):
+        # A probe that never ran must not read as "not tracked", which would let
+        # an ignore rule over the same path answer allow.
+        monkeypatch.setattr(git_probe, "_git", lambda cwd, *args: None)
+        git_probe.reset_probes()
+        assert classify("rm -rf build", str(repo), {}) is None
 
     def test_outside_repository_asks(self, tmp_path, no_temp_roots):
         (tmp_path / "data").mkdir()

@@ -313,6 +313,33 @@ def _drop_leading_runners(tokens: list[str]) -> list[str]:
     return tokens[i:]
 
 
+# A redirection is part of the segment the splitter emits, and its filename is not
+# something the command acts on: `rm -rf /tmp/x > build.log` must not be read as a
+# deletion of `build.log`.
+_REDIRECTION = re.compile(r"^\d*(?:>>|>&|>|<<<|<<|<&|<)")
+
+
+def path_arguments(args: list[str]) -> list[str]:
+    """The words a simple command names paths with: its arguments minus option
+    flags and redirections. Everything after ``--`` is a path, whatever it starts
+    with."""
+    paths: list[str] = []
+    literal = False
+    redirect_filename = False
+    for arg in args:
+        if redirect_filename:
+            redirect_filename = False
+        elif not literal and arg == "--":
+            literal = True
+        elif not literal and _REDIRECTION.match(arg):
+            redirect_filename = _REDIRECTION.fullmatch(arg) is not None
+        elif not literal and arg.startswith("-") and arg != "-":
+            continue
+        else:
+            paths.append(arg)
+    return paths
+
+
 def tokenize(command: str) -> list[str]:
     """Shell-split a command and drop its leading wrapper/runner prefixes,
     returning ``[]`` when it cannot be dequoted."""

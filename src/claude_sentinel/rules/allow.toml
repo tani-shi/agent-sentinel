@@ -197,18 +197,20 @@ command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(status|log|diff|branch|show|rev-pars
 # `commit` is intentionally excluded — the `git-commit` ask rule enforces
 # the "never auto-commit" policy.
 
-# `rm` is where the deletion scope sends a recursive `rm` aimed at a tracked
-# path: it stages the deletion and leaves the content in HEAD, so it must not
-# itself stop to ask.
 [[rules]]
 name = "git-local-ops"
-command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(add|switch|stash|pull|fetch|rebase|merge|cherry-pick|reset|restore|revert|rm)(\s|$)'''
+command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(add|switch|stash|pull|fetch|rebase|merge|cherry-pick|reset|restore|revert)(\s|$)'''
 
-# `git discard` snapshots the worktree to refs/discard/* before destroying it,
-# so the discard is recoverable without a prompt.
+# Both verbs are the recoverable deletion a deny reason points the user at, so
+# neither may prompt: `deletion_scope._TRACKED_PATH` sends a recursive `rm` at a
+# tracked path to `git rm -r <path>`, which stages the deletion and leaves the
+# content in HEAD, and `_UNTRACKED_PATH` sends it to `git discard --untracked
+# <path>`, which snapshots the worktree to refs/discard/* first. An ask rule over
+# either would strand that guidance —
+# tests/test_deletion_scope.py::test_guided_alternative_never_asks guards it.
 [[rules]]
-name = "git-discard"
-command_regex = '''^\s*git\s+(-C\s+\S+\s+)?discard(\s|$)'''
+name = "git-recoverable-deletion"
+command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(rm|discard)(\s|$)'''
 
 [[rules]]
 name = "git-read-extra"

@@ -5,12 +5,12 @@ from __future__ import annotations
 import os
 import re
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from importlib import resources
 from typing import Any, Literal, NamedTuple
 
-from claude_sentinel import deletion_scope, paths
+from claude_sentinel import deletion_scope, git_probe, paths
 from claude_sentinel.command_normalizer import (
     normalize_for_matching,
     tokenize,
@@ -169,6 +169,23 @@ def match_sensitive_path(file_path: str) -> Rule | None:
     return None
 
 
+def match_sensitive_directory(dir_path: str) -> Rule | None:
+    """A sensitive path rule protecting the contents of ``dir_path``.
+
+    The rules are written for the files a tool opens, so the directory holding
+    them (``~/.ssh``) matches only with the separator appended — and only against
+    the rules that protect a whole tree, identified by their ``**``-terminated
+    glob. Appending it for the rest would defeat their exemptions: a file rule's
+    suffix group reads ``.env.example/`` as a suffix it does not exempt.
+    """
+    with_separator = dir_path.replace("\\", "/").rstrip("/") + "/"
+    for rule in get_deny_rules().sensitive_path_rules:
+        protects_tree = any(glob.endswith("/**") for glob in rule.path_globs)
+        if protects_tree and rule.pattern.search(with_separator):
+            return rule
+    return None
+
+
 # `sed -i`/`--in-place` writes files directly. Unlike the Write/Edit tools,
 # a bash command never passes through the sensitive_path_rules, so an in-place
 # sed would otherwise be a backdoor around that protection while the generic
@@ -190,13 +207,63 @@ def match_inplace_write_sensitive(command: str) -> Rule | None:
     return None
 
 
+# The file tools refuse to read, write or edit these paths, so no bash command
+# gets to either: a command that names one copies, moves, deletes, links or reads
+# a secret out of the tree the rules protect, and the tool boundary would be the
+# only thing left holding. There is no verb list here on purpose — `cp` alone
+# would hand the content to an unprotected path, and the next verb after it is
+# whichever one this list forgot.
+_SECRET_OPERAND_GUIDANCE = (
+    "Names a path these rules protect, which no bash command may read, copy, "
+    "move or delete — the file tools are refused the same paths. Nothing here can "
+    "create such a file, so nothing here needs to touch one; have the user do it "
+    "themselves, or work from a template like `.env.example`."
+)
+
+
+def match_secret_operand(command: str, cwd: str) -> Rule | None:
+    """Deny a command that names a sensitive path, or the directory holding them.
+
+    Every word is a candidate, not just the path arguments: a flag's value
+    (``--env-file=.env``) and a redirection target (``> ~/.ssh/authorized_keys``)
+    reach the file just as well as a positional does.
+    """
+    # Only a command the splitter could read: whitespace-splitting a raw string
+    # cannot tell an operand from a mention, and would deny a heredoc body or a
+    # loop list that merely names `.env`. An unparseable command keeps the deny
+    # regexes and the LLM judge, which is where the splitter's limits always land.
+    for word in _operand_candidates(tokenize(command)):
+        if "$" in word or "`" in word:
+            continue
+        resolved = paths.resolve(word, cwd)
+        hit = match_sensitive_path(resolved) or match_sensitive_directory(resolved)
+        if hit:
+            return Rule(
+                name=f"secret-path:{hit.name}",
+                pattern=hit.pattern,
+                reason=_SECRET_OPERAND_GUIDANCE,
+            )
+    return None
+
+
+def _operand_candidates(tokens: list[str]) -> Iterator[str]:
+    """Every word a command might reach a file through: the words themselves, and
+    the value side of an ``=`` (``--env-file=.env``, ``ENV_FILE=.env``)."""
+    for token in tokens:
+        stripped = token.lstrip("<>").lstrip("0123456789").lstrip("<>&")
+        yield stripped or token
+        if "=" in token:
+            yield token.split("=", 1)[1]
+
+
 def reset_cache() -> None:
     """Reset the rule and probe caches (useful for testing)."""
     global _deny_rules, _allow_rules, _ask_rules
     _deny_rules = None
     _allow_rules = None
     _ask_rules = None
-    deletion_scope.reset_cache()
+    deletion_scope.reset_temp_roots()
+    git_probe.reset_probes()
 
 
 # --- Bash command splitter ----------------------------------------------------
@@ -794,7 +861,7 @@ def _ask_or_deny(rule: Rule, cwd: str) -> Literal["ask", "deny"]:
     ``reason`` names exists, so a blocked command is never left without an
     alternative.
     """
-    if rule.deny_if == "git-alias-discard" and deletion_scope.has_discard_alias(cwd):
+    if rule.deny_if == "git-alias-discard" and git_probe.has_discard_alias(cwd):
         return "deny"
     return "ask"
 
@@ -823,7 +890,11 @@ def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) ->
     out-of-project script files (``bash /tmp/x.sh``) are not swallowed by the
     permissive ``node-run`` / ``zsh-run`` allow rules.
     """
-    deny = match_deny(segment) or match_inplace_write_sensitive(segment)
+    deny = (
+        match_deny(segment)
+        or match_inplace_write_sensitive(segment)
+        or match_secret_operand(segment, cwd)
+    )
     if deny:
         return SegmentVerdict("deny", deny.name, deny.reason)
     scope = deletion_scope.classify(segment, cwd, assignments)
@@ -893,7 +964,11 @@ def evaluate_bash_command(command: str, cwd: str | None = None) -> BashEvaluatio
         # Both DENY and ASK rules are anchored at ``^\s*<head>`` so they
         # only match when the unparseable command's head is the rule's
         # expected program.
-        deny = match_deny(command) or match_inplace_write_sensitive(command)
+        deny = (
+            match_deny(command)
+            or match_inplace_write_sensitive(command)
+            or match_secret_operand(command, cwd)
+        )
         if deny:
             return BashEvaluation("deny", _deny_reason(deny.name, deny.reason))
         ask = match_ask(command)
@@ -912,11 +987,11 @@ def evaluate_bash_command(command: str, cwd: str | None = None) -> BashEvaluatio
     seen_dirs: set[str] = set()
     allow_names: list[str] = []
     seen_allow: set[str] = set()
-    bindings = deletion_scope.Bindings()
+    assignments = deletion_scope.Assignments()
 
     for segment in segments:
-        bindings.record(segment)
-        verdict = _evaluate_segment(segment, cwd, bindings)
+        assignments.record(segment)
+        verdict = _evaluate_segment(segment, cwd, assignments)
         if verdict.decision == "deny":
             if deny_hit is None:
                 deny_hit = verdict

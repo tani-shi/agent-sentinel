@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-sentinel"
-version = "2026.08.12.4"
+version = "2026.08.12.5"
 description = "Claude Code hook for evaluating tool permission requests"
 requires-python = ">=3.11"
 dependencies = [

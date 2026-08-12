@@ -71,15 +71,16 @@ Normalization also strips leading **wrapper tokens** that would otherwise let a 
 
 | Target | Decision |
 |--------|----------|
+| The filesystem root or the home directory, however it is written (`/`, `~/`, `$HOME`, `"$HOME"`, or behind a flag as in `rm -rf --no-preserve-root /`) | **deny** |
 | Below a temp root (`/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`) | **allow** |
 | A temp root itself, including the `<root>/*` form the shell expands to everything in it | **deny** |
 | Inside the working directory, tracked by git | **deny** — `git rm -r <path>` leaves the content in HEAD |
-| Inside the working directory, matching a `.gitignore` rule (`build`, `.next`, `node_modules`) | **allow** |
+| Inside the working directory, matching a `.gitignore` rule (`build`, `.next`, `node_modules`) | **allow** — a secret is ignored too, and the deny stage below has already stopped it |
 | Inside the working directory, untracked and not ignored | **deny** where `git discard` is configured (it snapshots to `refs/discard/*` first), otherwise **ask** |
 | Inside the working directory, nonexistent — nothing to delete | **allow** |
 | Anything else, an unresolved `$VAR`, or a word the shell expands (`build/*`, `{src,tests}`) outside a temp root | **ask** (the `rm-recursive` rule) |
 
-Only assignments of a literal value count, and a name assigned two different values in one command line (`S=/etc/x || S=/tmp/x`) resolves to nothing — which of the two runs depends on the operator between them. Redirections in the segment (`rm -rf /tmp/scratch > out.log`) are not targets. A word the shell expands is only classified where the expansion cannot change the answer — every path `/tmp/session/*` reaches is below a temp root; anything else expanded falls through to **ask**.
+`$TMPDIR` and `$HOME` are read from the hook's own environment, which is the shell's. Only assignments of a literal value count, and a name assigned two different values in one command line (`S=/etc/x || S=/tmp/x`) resolves to nothing — which of the two runs depends on the operator between them. Redirections in the segment (`rm -rf /tmp/scratch > out.log`) are not targets. A word the shell expands is only classified where the expansion cannot change the answer — every path `/tmp/session/*` reaches is below a temp root; anything else expanded falls through to **ask**.
 
 The strictest target decides the segment. The git questions (`rev-parse --show-toplevel`, `ls-files`, `check-ignore`, `config --get alias.discard`) are the only subprocesses the hook runs, and only for a recursive `rm` aimed inside the working directory; a probe that fails or exceeds its one-second budget counts as unknown and falls back to **ask**.
 
@@ -97,7 +98,8 @@ Tools with external impact (e.g. Slack send/schedule/canvas tools, Notion create
 | Rule | Pattern |
 |------|---------|
 | `rm-rf-root` | `rm -rf /`, `rm -rf ~`, `rm -rf $HOME`, `rm -rf /tmp`, `rm -rf /var/tmp` |
-| `rm-temp-root` / `rm-tracked-path` / `rm-untracked-path` | Decided by the deletion scope, not a regex — see "Recursive `rm` is judged by where it points" |
+| `secret-path:<path rule>` | Any command naming a sensitive path, or the directory holding them (`~/.ssh`) — `cat`, `cp`, `mv`, `rm`, `trash`, `ln`, `tar`, `scp`, a redirection target, a `--env-file=` value — see "Sensitive path deny rules" |
+| `rm-root-target` / `rm-temp-root` / `rm-tracked-path` / `rm-untracked-path` | Decided by the deletion scope, not a regex — see "`rm` is judged by where it points" |
 | `sudo` | Any command starting with `sudo` |
 | `fork-bomb` | `:(){ :\|:& };:` pattern |
 | `busy-wait-noop` | A loop body that is only a no-op (`do :`, `do true`, `do continue`) — an infinite CPU spin |
@@ -118,7 +120,7 @@ Tools with external impact (e.g. Slack send/schedule/canvas tools, Notion create
 
 ## Sensitive path deny rules (RULE_DENY)
 
-Sensitive files blocked from `Read`, `Write`, `Edit`, and `MultiEdit` tools. Each rule carries both a `path_regex` (used by the hook and by the `sed -i` backdoor check below) and a `path_glob` list (expanded by the installer into `permissions.deny` entries in `settings.json`, which is what protects in-project files — see "How it works"). The same patterns also deny an in-place `sed -i` / `sed --in-place` whose target file matches one of them — otherwise a bash command would be a backdoor around the protection the file tools enforce:
+Sensitive files blocked from `Read`, `Write`, `Edit`, and `MultiEdit` tools. Each rule carries both a `path_regex` (used by the hook and by the `sed -i` backdoor check below) and a `path_glob` list (expanded by the installer into `permissions.deny` entries in `settings.json`, which is what protects in-project files — see "How it works"). **No bash command may name one of these paths.** Every word of a command is checked — positionals, a flag's value (`--env-file=.env`), a redirection target (`> ~/.ssh/authorized_keys`) — and the directory holding the files counts too, so `rm -rf ~/.ssh` is blocked as well as `rm ~/.ssh/id_rsa`. There is deliberately no list of verbs: `cat` prints the secret into the conversation, `cp` hands it to an unprotected path, `ln` aliases it, `tar`/`scp` ship it, and the next verb after those is whichever one such a list forgot. Nothing under these rules can create such a file — `Read`, `Edit` and `Write` are all refused — so nothing needs to read, copy, move or delete one; the user does that themselves, or the command works from a template like `.env.example`. A word holding an unresolved `$VAR` goes to the LLM judge, as does a command the splitter cannot read at all — whitespace-splitting a raw string cannot tell an operand from a mention, so a heredoc body naming `.env` would be denied for saying the word. The older `sed -i` check stays as a second layer that does read the raw string. That check denies an in-place `sed -i` / `sed --in-place` whose target file matches one of them — otherwise a bash command would be a backdoor around the protection the file tools enforce:
 
 | Category | Rule | Pattern |
 |----------|------|---------|
@@ -180,7 +182,7 @@ Additionally, file tools are added to `permissions.allow` so ordinary edits neve
 Common development commands are auto-approved, including:
 
 - Shell: Bash comments (`#`), shell constructs (`for`, `while`, `if`, `case`, `do`/`done`, `then`/`else`/`fi`, `esac`), `pushd`/`popd`, `zsh`/`bash`/`sh` invocations
-- File operations: `ls`, `cat`, `head`, `tail`, `find`, `grep`, `cp`, `mv`, `mkdir`, `touch`, `rm` (non-recursive always; recursive only where the deletion scope allows it), `trash`
+- File operations: `ls`, `cat`, `head`, `tail`, `find`, `grep`, `cp`, `mv`, `mkdir`, `touch`, `rm` (non-recursive; recursive only where the deletion scope allows it), `trash` — none of them on a sensitive path, which the deny stage stops whatever the verb
 - Git: `status`, `log`, `diff`, `add`, `commit`, `revert`, `push` (with `--force-with-lease`), `switch`, `restore --staged`, `rm`, and `discard` — which snapshots the worktree to `refs/discard/*` before destroying it, so no prompt is needed (destructive ops like `reset --hard`, `restore` into the worktree, `switch -f`, `clean` require confirmation)
 - Build tools: `make` (any target; dangerous targets like `deploy`/`publish`/`release`/`push`/`upgrade`/`tf-*`/`terraform-*` are escalated to ASK), `cargo` (safe subcommands only), `go build`, `node`, `bun` (excludes `bun x`), `python`, `uv` (excludes `publish`), `pip` read (`show`/`list`/`freeze`/`check`/`search`/`config get`)
 - Package managers: `npm`/`yarn`/`pnpm` (safe subcommands only, excludes `publish`; `run` allows `test`/`build`/`lint`/`cli`/etc., excludes `deploy`/`publish`/`release`/`push`); `npx`/`pnpx`/`bunx` for safe dev tools (`prettier`, `tsc`, `eslint`, `biome`, `prisma`, `vitest`, `jest`, `playwright`, `shadcn`, `next`, `vite`, etc.; unknown packages require confirmation)
@@ -311,6 +313,7 @@ src/claude_sentinel/
 ├── rule_engine.py        # TOML rule loading and regex matching
 ├── command_normalizer.py # Strip prefix options before matching/grouping
 ├── deletion_scope.py     # Verdicts for a recursive rm, by where its targets point
+├── git_probe.py          # Cached read-only git questions: repo, tracked, ignored, discard alias
 ├── paths.py              # Resolve a command's path argument, test containment
 ├── llm_judge.py          # LLM_JUDGE/LLM_JUDGE_READ: Claude Agent SDK judge
 ├── applier.py            # Append validated rules to allow/ask.toml
