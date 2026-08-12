@@ -297,7 +297,7 @@ def _skip_runner_args(tokens: list[str], i: int) -> int:
     return i
 
 
-def drop_leading_runners(tokens: list[str]) -> list[str]:
+def _drop_leading_runners(tokens: list[str]) -> list[str]:
     """Drop leading wrapper prefixes (`!`/`do`/`exec`/…) and arg-taking command
     runners (`env`/`timeout`/`nice`/`ionice`/`stdbuf`), returning the wrapped
     command's tokens. Token-level so a dequoted script argument stays intact."""
@@ -313,15 +313,51 @@ def drop_leading_runners(tokens: list[str]) -> list[str]:
     return tokens[i:]
 
 
+# A redirection is part of the segment the splitter emits, and its filename is not
+# something the command acts on: `rm -rf /tmp/x > build.log` must not be read as a
+# deletion of `build.log`.
+_REDIRECTION = re.compile(r"^\d*(?:>>|>&|>|<<<|<<|<&|<)")
+
+
+def path_arguments(args: list[str]) -> list[str]:
+    """The words a simple command names paths with: its arguments minus option
+    flags and redirections. Everything after ``--`` is a path, whatever it starts
+    with."""
+    paths: list[str] = []
+    literal = False
+    redirect_filename = False
+    for arg in args:
+        if redirect_filename:
+            redirect_filename = False
+        elif not literal and arg == "--":
+            literal = True
+        elif not literal and _REDIRECTION.match(arg):
+            redirect_filename = _REDIRECTION.fullmatch(arg) is not None
+        elif not literal and arg.startswith("-") and arg != "-":
+            continue
+        else:
+            paths.append(arg)
+    return paths
+
+
+def tokenize(command: str) -> list[str]:
+    """Shell-split a command and drop its leading wrapper/runner prefixes,
+    returning ``[]`` when it cannot be dequoted."""
+    try:
+        return _drop_leading_runners(shlex.split(command, posix=True))
+    except ValueError:
+        return []
+
+
 def _strip_command_runners(command: str) -> str:
-    """String form of :func:`drop_leading_runners` for rule matching
+    """String form of :func:`_drop_leading_runners` for rule matching
     (`env sudo ...` -> `sudo ...`). Quote loss from the shlex round-trip is
     acceptable here because the result is only regex-matched, never executed."""
     try:
         tokens = shlex.split(command, posix=True)
     except ValueError:
         return command
-    rest = drop_leading_runners(tokens)
+    rest = _drop_leading_runners(tokens)
     if not rest or len(rest) == len(tokens):
         return command
     return " ".join(rest)
