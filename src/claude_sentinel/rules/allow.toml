@@ -197,9 +197,12 @@ command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(status|log|diff|branch|show|rev-pars
 # `commit` is intentionally excluded — the `git-commit` ask rule enforces
 # the "never auto-commit" policy.
 
+# `rm` is where the deletion scope sends a recursive `rm` aimed at a tracked
+# path: it stages the deletion and leaves the content in HEAD, so it must not
+# itself stop to ask.
 [[rules]]
 name = "git-local-ops"
-command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(add|switch|stash|pull|fetch|rebase|merge|cherry-pick|reset|restore|revert)(\s|$)'''
+command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(add|switch|stash|pull|fetch|rebase|merge|cherry-pick|reset|restore|revert|rm)(\s|$)'''
 
 # `git discard` snapshots the worktree to refs/discard/* before destroying it,
 # so the discard is recoverable without a prompt.

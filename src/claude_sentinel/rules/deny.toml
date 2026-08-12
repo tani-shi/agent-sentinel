@@ -9,9 +9,12 @@ env_template_suffixes = "example|sample|template|dist"
 
 # --- Command Deny Rules ---
 
+# The temp roots are here for the unparseable-command prefilter, which sees only
+# the raw string. A command the splitter can read reaches the deletion scope,
+# which resolves the target and covers the `$TMPDIR` and `<root>/*` forms too.
 [[rules]]
 name = "rm-rf-root"
-command_regex = '''rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+)(/\s*$|/\s+|~\s*$|~\s+|\$HOME\s*$|\$HOME\s+)'''
+command_regex = '''rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+)(/\s*$|/\s+|~\s*$|~\s+|\$HOME\s*$|\$HOME\s+|(/private)?/tmp/?\s*$|/var/tmp/?\s*$)'''
 
 [[rules]]
 name = "sudo"

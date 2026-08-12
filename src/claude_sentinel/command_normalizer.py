@@ -297,7 +297,7 @@ def _skip_runner_args(tokens: list[str], i: int) -> int:
     return i
 
 
-def drop_leading_runners(tokens: list[str]) -> list[str]:
+def _drop_leading_runners(tokens: list[str]) -> list[str]:
     """Drop leading wrapper prefixes (`!`/`do`/`exec`/…) and arg-taking command
     runners (`env`/`timeout`/`nice`/`ionice`/`stdbuf`), returning the wrapped
     command's tokens. Token-level so a dequoted script argument stays intact."""
@@ -313,15 +313,24 @@ def drop_leading_runners(tokens: list[str]) -> list[str]:
     return tokens[i:]
 
 
+def tokenize(command: str) -> list[str]:
+    """Shell-split a command and drop its leading wrapper/runner prefixes,
+    returning ``[]`` when it cannot be dequoted."""
+    try:
+        return _drop_leading_runners(shlex.split(command, posix=True))
+    except ValueError:
+        return []
+
+
 def _strip_command_runners(command: str) -> str:
-    """String form of :func:`drop_leading_runners` for rule matching
+    """String form of :func:`_drop_leading_runners` for rule matching
     (`env sudo ...` -> `sudo ...`). Quote loss from the shlex round-trip is
     acceptable here because the result is only regex-matched, never executed."""
     try:
         tokens = shlex.split(command, posix=True)
     except ValueError:
         return command
-    rest = drop_leading_runners(tokens)
+    rest = _drop_leading_runners(tokens)
     if not rest or len(rest) == len(tokens):
         return command
     return " ".join(rest)

@@ -2,12 +2,13 @@
 
 import pytest
 
-from claude_sentinel import rule_engine
+from claude_sentinel import deletion_scope
 from claude_sentinel.rule_engine import (
     _expand_fragments,
     evaluate_bash_command,
     evaluate_command,
     extract_commands,
+    get_allow_rules,
     get_deny_rules,
     load_rules,
     match_allow,
@@ -323,6 +324,7 @@ class TestAllowRules:
             "git reset HEAD~1",
             "git restore file.txt",
             "git revert HEAD",
+            "git rm -r src",
         ):
             assert match_allow(cmd) is not None, cmd
         # `git commit` is intentionally NOT in the allow rule; it is asked.
@@ -817,6 +819,32 @@ class TestAllowRules:
         assert match_allow("ntn pages trash abc") is None
         assert match_allow("ntn files create") is None
         assert match_allow("ntn login") is None
+
+    # The `variable-assignment` rule and deletion_scope's binding parser accept
+    # the same assignment grammar from two regexes. Sharing one would put group
+    # numbering inside a rules file, so the grammar is pinned here instead.
+    ASSIGNMENT_CASES = (
+        ("S=/tmp/x", True),
+        ("S=", True),
+        ('S="a b"', True),
+        ("S='a b'", True),
+        ("PATH_A=./x:y", True),
+        ("S=$(x)", False),
+        ('S="a$b"', False),
+        ("S=`x`", False),
+        ("A=1 B=2", False),
+        ("FOO=bar make", False),
+        ("env S=/tmp/x", False),
+        ("rm -rf $S", False),
+    )
+
+    def test_assignment_grammar_matches_the_allow_rule(self):
+        rule = next(r for r in get_allow_rules().command_rules if r.name == "variable-assignment")
+        assert rule.pattern.flags == deletion_scope._LITERAL_ASSIGNMENT.flags
+        for case, accepted in self.ASSIGNMENT_CASES:
+            assert bool(rule.pattern.match(case)) is accepted, case
+            bound = deletion_scope._LITERAL_ASSIGNMENT.match(case)
+            assert bool(bound) is accepted, case
 
 
 class TestSensitivePathRules:
@@ -1879,6 +1907,14 @@ class TestEvaluateCommand:
         decision, _ = evaluate_command('echo "unbalanced')
         assert decision == "llm"
 
+    @pytest.mark.parametrize("root", ["/tmp", "/tmp/", "/private/tmp", "/var/tmp"])
+    def test_unparseable_temp_root_wipe_denied(self, root):
+        # The deletion scope never sees an unparseable command, so the temp roots
+        # in the rm-rf-root regex are what stands between this and the judge.
+        decision, reason = evaluate_command(f'echo "unbalanced\nrm -rf {root}')
+        assert decision == "deny", root
+        assert "rm-rf-root" in reason
+
     def test_heredoc_resolves_via_rules(self):
         # `uv run` matches the uv-safe ALLOW rule; the heredoc body is part
         # of the segment but does not contain any deny/ask trigger.
@@ -2261,11 +2297,11 @@ class TestDenyIfEscalation:
 
     @pytest.fixture
     def with_discard(self, monkeypatch):
-        monkeypatch.setattr(rule_engine, "_git_alias_discard", lambda cwd: True)
+        monkeypatch.setattr(deletion_scope, "has_discard_alias", lambda cwd: True)
 
     @pytest.fixture
     def without_discard(self, monkeypatch):
-        monkeypatch.setattr(rule_engine, "_git_alias_discard", lambda cwd: False)
+        monkeypatch.setattr(deletion_scope, "has_discard_alias", lambda cwd: False)
 
     ESCALATING = ["git checkout main", "git checkout -- .", "git restore .", "git restore -SW f"]
 
@@ -2301,5 +2337,5 @@ class TestDenyIfEscalation:
         def fail(cwd):
             raise AssertionError("alias lookup ran for a rule without deny_if")
 
-        monkeypatch.setattr(rule_engine, "_git_alias_discard", fail)
+        monkeypatch.setattr(deletion_scope, "has_discard_alias", fail)
         assert evaluate_command("git clean -fd", self.CWD)[0] == "ask"

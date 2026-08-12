@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
-import subprocess
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from functools import cache
 from importlib import resources
 from typing import Any, Literal, NamedTuple
 
+from claude_sentinel import deletion_scope, paths
 from claude_sentinel.command_normalizer import (
-    drop_leading_runners,
     normalize_for_matching,
+    tokenize,
 )
 
 
@@ -192,12 +191,12 @@ def match_inplace_write_sensitive(command: str) -> Rule | None:
 
 
 def reset_cache() -> None:
-    """Reset the rule cache (useful for testing)."""
+    """Reset the rule and probe caches (useful for testing)."""
     global _deny_rules, _allow_rules, _ask_rules
     _deny_rules = None
     _allow_rules = None
     _ask_rules = None
-    _git_alias_discard.cache_clear()
+    deletion_scope.reset_cache()
 
 
 # --- Bash command splitter ----------------------------------------------------
@@ -619,15 +618,6 @@ _DASH_C_FLAG = re.compile(r"[-+][a-zA-Z]*c")
 _DASH_O_FLAG = re.compile(r"[-+][a-zA-Z]*o")
 
 
-def _tokenize_segment(segment: str) -> list[str]:
-    """Shell-split a segment and drop leading wrapper/runner prefixes, returning
-    ``[]`` when it cannot be dequoted."""
-    try:
-        return drop_leading_runners(shlex.split(segment, posix=True))
-    except ValueError:
-        return []
-
-
 def _extract_inline_script(segment: str) -> str | None:
     """Return the inline script from a ``<shell> [opts] -c <script>`` or
     ``eval <script>`` segment, else ``None``.
@@ -637,7 +627,7 @@ def _extract_inline_script(segment: str) -> str | None:
     are still unwrapped. Returns ``None`` when the segment is not such a form or
     cannot be dequoted.
     """
-    tokens = _tokenize_segment(segment)
+    tokens = tokenize(segment)
     if not tokens:
         return None
     if tokens[0] == "eval" and len(tokens) >= 2:
@@ -756,7 +746,7 @@ def _interpreter_escalation(segment: str, cwd: str) -> tuple[str | None, list[st
         * ``None``       — not an escalating interpreter invocation (in-project
           script, REPL, ``python -m`` …); defer to the normal allow rules.
     """
-    tokens = _tokenize_segment(segment)
+    tokens = tokenize(segment)
     if not tokens:
         return None, []
     head = os.path.basename(tokens[0])
@@ -791,41 +781,10 @@ def _out_of_project_scripts(args: list[str], cwd: str) -> list[str]:
     for arg in args:
         if arg.startswith("-"):
             continue
-        resolved = _resolve_path(arg, base)
-        if not _is_within(resolved, root):
+        resolved = paths.resolve(arg, base)
+        if not paths.is_within(resolved, root):
             outside.append(resolved)
     return outside
-
-
-def _resolve_path(path: str, base: str) -> str:
-    expanded = os.path.expanduser(path)
-    if not os.path.isabs(expanded):
-        expanded = os.path.join(base, expanded)
-    return os.path.realpath(expanded)
-
-
-def _is_within(target: str, root: str) -> bool:
-    """True when realpath ``target`` is ``root`` or below it."""
-    try:
-        return os.path.commonpath([root, target]) == root
-    except ValueError:
-        # Uncomparable roots (different drives): treat as outside (safe).
-        return False
-
-
-@cache
-def _git_alias_discard(cwd: str) -> bool:
-    try:
-        result = subprocess.run(
-            ["git", "config", "--get", "alias.discard"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0 and bool(result.stdout.strip())
 
 
 def _ask_or_deny(rule: Rule, cwd: str) -> Literal["ask", "deny"]:
@@ -835,37 +794,51 @@ def _ask_or_deny(rule: Rule, cwd: str) -> Literal["ask", "deny"]:
     ``reason`` names exists, so a blocked command is never left without an
     alternative.
     """
-    if rule.deny_if == "git-alias-discard" and _git_alias_discard(cwd):
+    if rule.deny_if == "git-alias-discard" and deletion_scope.has_discard_alias(cwd):
         return "deny"
     return "ask"
 
 
-def _evaluate_segment(segment: str, cwd: str) -> tuple[str, Rule | None, list[str]]:
-    """Evaluate a single segment through DENY -> ASK -> interpreter escalation
-    -> ALLOW.
+class SegmentVerdict(NamedTuple):
+    """One segment's outcome. ``name`` is the rule (or scope verdict) behind it,
+    empty where no rule spoke; ``reason`` carries deny guidance."""
 
-    Returns (decision, matched_rule, read_paths) where decision is one of
-    'deny', 'ask', 'llm', 'llm_read', 'allow', 'unmatched'. ``read_paths`` holds
-    the out-of-project script paths to grant read access to; it is non-empty only
-    for 'llm_read'.
+    decision: str
+    name: str = ""
+    reason: str | None = None
+    read_paths: tuple[str, ...] = ()
 
-    The interpreter escalation runs before ALLOW so that inline code
-    (``node -e``) and out-of-project script files (``bash /tmp/x.sh``) are not
-    swallowed by the permissive ``node-run`` / ``zsh-run`` allow rules.
+
+def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) -> SegmentVerdict:
+    """Evaluate a single segment through DENY -> deletion scope -> ASK ->
+    interpreter escalation -> ALLOW.
+
+    ``decision`` is one of 'deny', 'ask', 'llm', 'llm_read', 'allow',
+    'unmatched'. ``read_paths`` holds the out-of-project script paths to grant
+    read access to; it is non-empty only for 'llm_read'.
+
+    The deletion scope runs before ASK so a recursive ``rm`` confined to a temp
+    root is not held up by the ``rm-recursive`` ask rule, and the interpreter
+    escalation runs before ALLOW so that inline code (``node -e``) and
+    out-of-project script files (``bash /tmp/x.sh``) are not swallowed by the
+    permissive ``node-run`` / ``zsh-run`` allow rules.
     """
     deny = match_deny(segment) or match_inplace_write_sensitive(segment)
     if deny:
-        return "deny", deny, []
+        return SegmentVerdict("deny", deny.name, deny.reason)
+    scope = deletion_scope.classify(segment, cwd, assignments)
+    if scope is not None:
+        return SegmentVerdict(scope.decision, scope.name, scope.reason)
     ask = match_ask(segment)
     if ask:
-        return _ask_or_deny(ask, cwd), ask, []
-    kind, paths = _interpreter_escalation(segment, cwd)
+        return SegmentVerdict(_ask_or_deny(ask, cwd), ask.name, ask.reason)
+    kind, read_paths = _interpreter_escalation(segment, cwd)
     if kind is not None:
-        return kind, None, paths
+        return SegmentVerdict(kind, read_paths=tuple(read_paths))
     allow = match_allow(segment)
     if allow:
-        return "allow", allow, []
-    return "unmatched", None, []
+        return SegmentVerdict("allow", allow.name)
+    return SegmentVerdict("unmatched")
 
 
 Decision = Literal["deny", "ask", "allow", "llm", "llm_read"]
@@ -884,29 +857,29 @@ class BashEvaluation(NamedTuple):
     read_dirs: tuple[str, ...] = ()
 
 
-def _deny_reason(rule: Rule) -> str:
+def _deny_reason(name: str, guidance: str | None) -> str:
     """Deny reason surfaced to Claude, with the rule's guidance appended.
 
-    A rule's optional ``reason`` redirects Claude to the native alternative
-    (subagent completion notification, run_in_background, KillShell/TaskStop,
-    the recoverable equivalent an escalated ask rule names) so a reason-less
-    block does not push it toward a bypass.
+    A rule's optional guidance redirects Claude to the native alternative
+    (subagent completion notification, run_in_background, KillShell/TaskStop, the
+    recoverable equivalent an escalated ask rule names) so a reason-less block
+    does not push it toward a bypass.
     """
-    base = f"Blocked by deny rule: {rule.name}"
-    return f"{base}. {rule.reason}" if rule.reason else base
+    base = f"Blocked by deny rule: {name}"
+    return f"{base}. {guidance}" if guidance else base
 
 
 def evaluate_bash_command(command: str, cwd: str | None = None) -> BashEvaluation:
-    """Evaluate a bash command by splitting it into segments and applying
-    DENY -> ASK -> interpreter escalation -> ALLOW to each segment with
-    strictest-wins aggregation.
+    """Evaluate a bash command by splitting it into segments, running each
+    through :func:`_evaluate_segment`, and aggregating strictest-wins.
 
     Decision precedence (most-restrictive wins):
         deny > ask > llm_read > llm > allow
 
     ``cwd`` is the working directory the command runs in; it decides whether an
     interpreter's script-file argument is inside the project (allow) or outside
-    it (``llm_read``). Defaults to ``os.getcwd()`` when not supplied.
+    it (``llm_read``), and which recursive ``rm`` targets are project-local.
+    Defaults to ``os.getcwd()`` when not supplied.
 
     For ``llm``/``llm_read`` the caller invokes the LLM judge with the original
     full command; ``llm_read`` additionally carries ``read_dirs`` so the judge can
@@ -922,50 +895,49 @@ def evaluate_bash_command(command: str, cwd: str | None = None) -> BashEvaluatio
         # expected program.
         deny = match_deny(command) or match_inplace_write_sensitive(command)
         if deny:
-            return BashEvaluation("deny", _deny_reason(deny))
+            return BashEvaluation("deny", _deny_reason(deny.name, deny.reason))
         ask = match_ask(command)
         if ask:
             if _ask_or_deny(ask, cwd) == "deny":
-                return BashEvaluation("deny", _deny_reason(ask))
+                return BashEvaluation("deny", _deny_reason(ask.name, ask.reason))
             return BashEvaluation("ask", f"Matched ask rule: {ask.name}")
         return BashEvaluation("llm", "Unparseable bash; deferring to LLM judge")
     if not segments:
         return BashEvaluation("allow", "Empty command")
 
-    deny_hit: Rule | None = None
-    ask_hit: Rule | None = None
+    deny_hit: SegmentVerdict | None = None
+    ask_hit: SegmentVerdict | None = None
     has_unmatched = False
     read_dirs: list[str] = []
     seen_dirs: set[str] = set()
     allow_names: list[str] = []
     seen_allow: set[str] = set()
+    bindings = deletion_scope.Bindings()
 
     for segment in segments:
-        decision, rule, read_paths = _evaluate_segment(segment, cwd)
-        if decision == "deny":
-            assert rule is not None
+        bindings.record(segment)
+        verdict = _evaluate_segment(segment, cwd, bindings)
+        if verdict.decision == "deny":
             if deny_hit is None:
-                deny_hit = rule
-        elif decision == "ask":
-            assert rule is not None
+                deny_hit = verdict
+        elif verdict.decision == "ask":
             if ask_hit is None:
-                ask_hit = rule
-        elif decision == "llm_read":
-            for parent in (os.path.dirname(p) for p in read_paths):
+                ask_hit = verdict
+        elif verdict.decision == "llm_read":
+            for parent in (os.path.dirname(p) for p in verdict.read_paths):
                 if parent and parent not in seen_dirs:
                     seen_dirs.add(parent)
                     read_dirs.append(parent)
-        elif decision == "allow":
-            assert rule is not None
-            if rule.name not in seen_allow:
-                seen_allow.add(rule.name)
-                allow_names.append(rule.name)
+        elif verdict.decision == "allow":
+            if verdict.name not in seen_allow:
+                seen_allow.add(verdict.name)
+                allow_names.append(verdict.name)
         else:
             # "llm" (inline eval) and "unmatched" both defer to the plain judge.
             has_unmatched = True
 
     if deny_hit is not None:
-        return BashEvaluation("deny", _deny_reason(deny_hit))
+        return BashEvaluation("deny", _deny_reason(deny_hit.name, deny_hit.reason))
     if ask_hit is not None:
         return BashEvaluation("ask", f"Matched ask rule: {ask_hit.name}")
     if read_dirs:
