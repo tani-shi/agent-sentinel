@@ -3,7 +3,7 @@
 import io
 import json
 
-from claude_sentinel.hook_io import read_input, write_output
+from agent_sentinel.hook_io import read_input, write_output
 
 
 class TestReadInput:

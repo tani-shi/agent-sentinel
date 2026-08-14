@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_sentinel.cli import main
+from agent_sentinel.cli import main
 
 
 @pytest.fixture()
@@ -26,7 +26,7 @@ class TestHookMode:
             "session_id": "test",
             "cwd": "/tmp",
         }
-        with patch("claude_sentinel.hook_io.read_input", return_value=hook_input):
+        with patch("agent_sentinel.hook_io.read_input", return_value=hook_input):
             main([])
 
         output = json.loads(capsys.readouterr().out)
@@ -40,11 +40,88 @@ class TestHookMode:
             "session_id": "test",
             "cwd": "/tmp",
         }
-        with patch("claude_sentinel.hook_io.read_input", return_value=hook_input):
+        with patch("agent_sentinel.hook_io.read_input", return_value=hook_input):
             main([])
 
         output = json.loads(capsys.readouterr().out)
         assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_codex_allow_preserves_native_approval(self, capsys, log_dir):
+        hook_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls -la"},
+            "session_id": "test",
+            "cwd": "/tmp",
+        }
+        with patch("agent_sentinel.hook_io.read_input", return_value=hook_input):
+            main(["--host", "codex"])
+
+        assert capsys.readouterr().out == ""
+
+    def test_codex_prompt_rule_is_left_to_execpolicy(self, capsys, log_dir):
+        hook_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ssh production"},
+            "session_id": "test",
+            "cwd": "/tmp",
+        }
+        with patch("agent_sentinel.hook_io.read_input", return_value=hook_input):
+            main(["--host", "codex"])
+
+        assert capsys.readouterr().out == ""
+
+    def test_codex_high_risk_ask_is_blocked_with_guidance(self, capsys, log_dir):
+        hook_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "rm -rf $TARGET"},
+            "session_id": "test",
+            "cwd": "/tmp",
+        }
+        with patch("agent_sentinel.hook_io.read_input", return_value=hook_input):
+            main(["--host", "codex"])
+
+        output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+        assert output["permissionDecision"] == "deny"
+        assert "git discard --untracked" in output["permissionDecisionReason"]
+
+    def test_codex_invalid_input_fails_closed(self, capsys, log_dir):
+        with patch("agent_sentinel.hook_io.read_input", side_effect=ValueError("bad json")):
+            main(["--host", "codex"])
+
+        output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+        assert output["permissionDecision"] == "deny"
+        assert "Invalid hook input" in output["permissionDecisionReason"]
+
+    def test_codex_evaluation_error_fails_closed(self, capsys, log_dir):
+        with (
+            patch("agent_sentinel.hook_io.read_input", return_value={}),
+            patch("agent_sentinel.evaluator.evaluate_codex", side_effect=TypeError("bad input")),
+        ):
+            main(["--host", "codex"])
+
+        output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+        assert output["permissionDecision"] == "deny"
+        assert "Policy evaluation failed" in output["permissionDecisionReason"]
+
+    def test_codex_never_uses_claude_sdk(self, capsys, log_dir):
+        hook_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "unknown-command"},
+            "session_id": "test",
+            "cwd": "/tmp",
+        }
+        with (
+            patch("agent_sentinel.hook_io.read_input", return_value=hook_input),
+            patch("agent_sentinel.llm_judge.evaluate") as judge,
+        ):
+            main(["--host", "codex"])
+
+        judge.assert_not_called()
+        assert capsys.readouterr().out == ""
 
     def test_unknown_tool_passthrough(self, capsys, log_dir):
         hook_input = {
@@ -54,7 +131,7 @@ class TestHookMode:
             "session_id": "test",
             "cwd": "/tmp",
         }
-        with patch("claude_sentinel.hook_io.read_input", return_value=hook_input):
+        with patch("agent_sentinel.hook_io.read_input", return_value=hook_input):
             main([])
 
         assert capsys.readouterr().out == ""
@@ -67,7 +144,7 @@ class TestHookMode:
             "session_id": "test",
             "cwd": "/tmp",
         }
-        with patch("claude_sentinel.hook_io.read_input", return_value=hook_input):
+        with patch("agent_sentinel.hook_io.read_input", return_value=hook_input):
             main([])
 
         log_file = log_dir / "eval.jsonl"
@@ -102,6 +179,25 @@ class TestTestMode:
         rec = json.loads(log_file.read_text().strip())
         assert rec["decision"] == "allow"
 
+    def test_codex_unknown_command_defers_without_claude_sdk(self, capsys, log_dir):
+        with patch("agent_sentinel.llm_judge.evaluate") as judge:
+            main(["--host", "codex", "--test", "unknown-command"])
+
+        judge.assert_not_called()
+        assert "DEFER [CODEX_NATIVE]" in capsys.readouterr().out
+
+    def test_codex_deny_uses_codex_evaluator(self, capsys, log_dir):
+        with (
+            patch("agent_sentinel.evaluator.evaluate_codex", wraps=None) as codex_evaluate,
+            patch("agent_sentinel.evaluator.evaluate") as claude_evaluate,
+        ):
+            codex_evaluate.return_value = ("deny", "Blocked", "RULE_DENY")
+            main(["--host", "codex", "--test", "sudo id"])
+
+        codex_evaluate.assert_called_once()
+        claude_evaluate.assert_not_called()
+        assert "DENY [RULE_DENY]" in capsys.readouterr().out
+
 
 class TestSubcommands:
     def test_install(self, tmp_path, capsys):
@@ -123,6 +219,15 @@ class TestSubcommands:
         captured = capsys.readouterr()
         assert "installed" in captured.out
         assert custom.exists()
+
+    def test_install_codex_with_path(self, tmp_path, capsys):
+        custom = tmp_path / "hooks.json"
+        main(["install", "--target", "codex", "--path", str(custom)])
+        captured = capsys.readouterr()
+        assert "Open /hooks" in captured.out
+        config = json.loads(custom.read_text())
+        command = config["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        assert command == "agent-sentinel --host codex"
 
 
 class TestLogSubcommand:

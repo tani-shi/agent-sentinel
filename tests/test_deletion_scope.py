@@ -4,9 +4,9 @@ from functools import cache
 
 import pytest
 
-from claude_sentinel import deletion_scope, git_probe
-from claude_sentinel.deletion_scope import classify
-from claude_sentinel.rule_engine import evaluate_command
+from agent_sentinel import deletion_scope, git_probe
+from agent_sentinel.deletion_scope import classify
+from agent_sentinel.rule_engine import evaluate_command
 
 
 @pytest.fixture(autouse=True)

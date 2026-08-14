@@ -1,4 +1,4 @@
-"""Install/uninstall claude-sentinel hooks into Claude Code settings."""
+"""Install/uninstall agent-sentinel hooks into Claude Code settings."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import json
 import shutil
 from pathlib import Path
 
-from claude_sentinel import rule_engine
-from claude_sentinel.evaluator import ASK_TOOLS, AUTO_ALLOW_TOOLS, FILE_TOOLS
+from agent_sentinel import rule_engine
+from agent_sentinel.evaluator import ASK_TOOLS, AUTO_ALLOW_TOOLS, FILE_TOOLS
 
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
@@ -43,7 +43,7 @@ HOOK_ENTRIES = [
         "hooks": [
             {
                 "type": "command",
-                "command": "claude-sentinel",
+                "command": "agent-sentinel --host claude",
             }
         ],
     }
@@ -81,11 +81,12 @@ def _is_sentinel_hook(hook: dict) -> bool:
     a second hook that evaluates every tool call again and uninstall unable to
     remove either.
     """
-    return "claude-sentinel" in hook.get("command", "")
+    command = hook.get("command", "")
+    return "agent-sentinel" in command or "claude-sentinel" in command
 
 
 def install(settings_path: Path | None = None) -> str:
-    """Install claude-sentinel hooks and permissions into Claude Code settings.
+    """Install agent-sentinel hooks and permissions into Claude Code settings.
 
     Creates a backup before modifying settings.
     Returns a status message.
@@ -115,9 +116,15 @@ def install(settings_path: Path | None = None) -> str:
     # Merge hooks
     hooks = settings.setdefault("hooks", {})
     existing = hooks.get(HOOK_EVENT, [])
-    hooks_installed = not any(
-        _is_sentinel_hook(hook) for entry in existing for hook in entry.get("hooks", [])
-    )
+    sentinel_hooks = [
+        hook for entry in existing for hook in entry.get("hooks", []) if _is_sentinel_hook(hook)
+    ]
+    hook_migrated = False
+    for hook in sentinel_hooks:
+        if hook.get("command") == "claude-sentinel":
+            hook["command"] = "agent-sentinel --host claude"
+            hook_migrated = True
+    hooks_installed = not sentinel_hooks
     if hooks_installed:
         existing.extend(HOOK_ENTRIES)
         hooks[HOOK_EVENT] = existing
@@ -126,18 +133,19 @@ def install(settings_path: Path | None = None) -> str:
 
     any_changes = (
         hooks_installed
+        or hook_migrated
         or legacy_removed
         or legacy_perm_removed
         or any(v > 0 for v in perm_added.values())
     )
     if not any_changes:
-        return f"claude-sentinel is already up to date in {path}"
+        return f"agent-sentinel is already up to date in {path}"
 
     lines = []
     if hooks_installed:
-        lines.append(f"claude-sentinel installed to {path}")
+        lines.append(f"agent-sentinel installed to {path}")
     else:
-        lines.append(f"claude-sentinel updated {path}")
+        lines.append(f"agent-sentinel updated {path}")
 
     lines.append(f"  hooks: {'installed' if hooks_installed else 'already installed'}")
     for key in ("deny", "allow", "ask"):
@@ -159,7 +167,7 @@ def install(settings_path: Path | None = None) -> str:
 
 
 def uninstall(settings_path: Path | None = None) -> str:
-    """Remove claude-sentinel hooks and permissions from Claude Code settings.
+    """Remove agent-sentinel hooks and permissions from Claude Code settings.
 
     Returns a status message.
     """
@@ -191,11 +199,11 @@ def uninstall(settings_path: Path | None = None) -> str:
 
     any_changes = hooks_removed or stale_removed or any(v > 0 for v in perm_removed.values())
     if not any_changes:
-        return "claude-sentinel not found in settings"
+        return "agent-sentinel not found in settings"
 
     _save_settings(path, settings)
 
-    lines = [f"claude-sentinel removed from {path}"]
+    lines = [f"agent-sentinel removed from {path}"]
     lines.append(f"  hooks: {'removed' if hooks_removed else 'not found'}")
     for key in ("deny", "allow", "ask"):
         removed = perm_removed[key]
@@ -215,17 +223,20 @@ def uninstall(settings_path: Path | None = None) -> str:
 
 
 def _remove_hook(settings: dict, event: str) -> bool:
-    """Remove claude-sentinel entries from hooks[event]. Returns True if any removed."""
+    """Remove agent-sentinel entries from hooks[event]. Returns True if any removed."""
     hooks = settings.get("hooks", {})
     existing = hooks.get(event)
     if not existing:
         return False
-    filtered = [
-        entry
-        for entry in existing
-        if not any(_is_sentinel_hook(hook) for hook in entry.get("hooks", []))
-    ]
-    if len(filtered) == len(existing):
+    removed = False
+    filtered = []
+    for entry in existing:
+        handlers = entry.get("hooks", [])
+        kept_handlers = [hook for hook in handlers if not _is_sentinel_hook(hook)]
+        removed |= len(kept_handlers) != len(handlers)
+        if kept_handlers:
+            filtered.append({**entry, "hooks": kept_handlers})
+    if not removed:
         return False
     if filtered:
         hooks[event] = filtered

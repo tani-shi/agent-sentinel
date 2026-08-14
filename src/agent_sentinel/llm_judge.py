@@ -26,7 +26,7 @@ _READ_SDK_TIMEOUT = 60.0
 
 def _load_prompt_template(filename: str) -> str:
     """Load an LLM prompt template from the rules package."""
-    rules_pkg = resources.files("claude_sentinel.rules")
+    rules_pkg = resources.files("agent_sentinel.rules")
     return (rules_pkg / filename).read_text(encoding="utf-8")
 
 
@@ -90,14 +90,17 @@ def evaluate(command: str, cwd: str, read_dirs: Sequence[str] | None = None) -> 
     built-in Read tool scoped to ``cwd`` plus ``read_dirs`` so it can inspect
     out-of-project script files the command executes before deciding.
     """
-    if read_dirs:
-        prompt = _load_prompt_template("llm_prompt_read.txt").format(command=command, cwd=cwd)
-        options = _read_options(cwd, read_dirs)
-        timeout = _READ_SDK_TIMEOUT
-    else:
-        prompt = _load_prompt_template("llm_prompt.txt").format(command=command, cwd=cwd)
-        options = _plain_options()
-        timeout = _SDK_TIMEOUT
+    try:
+        if read_dirs:
+            prompt = _load_prompt_template("llm_prompt_read.txt").format(command=command, cwd=cwd)
+            options = _read_options(cwd, read_dirs)
+            timeout = _READ_SDK_TIMEOUT
+        else:
+            prompt = _load_prompt_template("llm_prompt.txt").format(command=command, cwd=cwd)
+            options = _plain_options()
+            timeout = _SDK_TIMEOUT
+    except ImportError as error:
+        return "ask", f"LLM judge unavailable: {error}"
 
     last_error = ""
     for attempt in range(_MAX_RETRIES):

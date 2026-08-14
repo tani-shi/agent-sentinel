@@ -16,8 +16,8 @@ from collections.abc import Iterator, Mapping
 from functools import cache
 from typing import Literal, NamedTuple
 
-from claude_sentinel import git_probe, paths
-from claude_sentinel.command_normalizer import path_arguments, tokenize
+from agent_sentinel import git_probe, paths
+from agent_sentinel.command_normalizer import path_arguments, tokenize
 
 _RECURSIVE_SHORT_FLAG = re.compile(r"^-[a-zA-Z]*[rR][a-zA-Z]*$")
 # Characters the shell expands into path names `rm` never receives verbatim.

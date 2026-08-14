@@ -1,386 +1,197 @@
-# claude-sentinel
+# agent-sentinel
 
-A [Claude Code hook](https://docs.anthropic.com/en/docs/claude-code/hooks) that evaluates every tool call before execution. It acts as a `PreToolUse` hook, applying a multi-stage evaluation system to automatically allow safe commands, block dangerous ones, and defer ambiguous cases to an LLM judge.
+Claude CodeとCodexが実行するツール呼び出しを検査する安全ガードです。Claude CodeではPreToolUse hookとpermissions、Codexではsandbox・execution rules・ネイティブ承認・PreToolUse hookを役割分担させます。
 
-Because it is a `PreToolUse` hook, its decisions layer *under* the project's `.claude/settings.json`: the permission precedence is `deny` > `ask` > sentinel decision > `allow`. A project can therefore force an `ask` (or `deny`) on a command sentinel would otherwise `allow`, and that rule still takes effect — sentinel's `allow` never short-circuits a project's `ask`/`deny`.
+agent-sentinelはCodexの権限を広げません。生成するexecution rulesは`prompt`と`forbidden`だけで、sandbox外実行を承認なしで許可する`decision = "allow"`は生成しません。利用者の`~/.codex/rules/default.rules`にも触れません。
 
-## Installation
+## 対応状況
+
+| 機能 | Claude Code | Codex |
+|---|---|---|
+| Bash | 静的ALLOW / ASK / DENYとLLM judge | execution rulesのprompt / forbiddenと決定論的hook DENY |
+| ファイル操作 | Read / Write / Edit | apply_patch |
+| 機密パス | hookとpermissions.deny | apply_patchをhookで検査 |
+| ASK | PreToolUseから承認を要求 | 前方一致はexecution rules、残りはネイティブ承認へ委譲 |
+| LLMによる意味判断 | Claude Agent SDK | Codexのauto-review |
+| インストール先 | `~/.claude/settings.json` | `~/.codex/hooks.json`と`~/.codex/rules/agent-sentinel.rules` |
+
+CodexのPreToolUseはdenyだけを確実に遮断できます。そのため、前方一致で表現できるASKは`.rules`の`prompt`が担当し、hookは静的DENY、機密パス、wrapperや引数を解析する決定論的DENYを担当します。hookはdeny以外では何も出力せず、Codexのsandboxと承認判断を上書きしません。
+
+Codexでは、ASK相当の判定の大半をネイティブ承認とauto-reviewへ委ねます。agent-sentinelが独自に恒久遮断するASKは、回復不能なworkspace変更を守る次の3種類です。
+
+- 判定範囲が確定しない再帰削除
+- worktreeを上書きする`git restore`
+- 変更を破棄する強制的な`git switch`
+
+deploy、make target、HTTP・cloud mutation、main/master以外へのforce pushやremote branch削除など、prefix ruleで既存のread/no-prompt判断を保てない操作にはCodex向けのruleを生成しません。これらはCodexのネイティブ承認とauto-reviewが判断します。通常形を`prompt`、prefixでは表せない変形をhook DENYにする規則もあり、hookは承認画面より先に遮断されることをCodex CLI 0.147.0で確認しています。
+
+Hosted WebSearchなど、ローカルfunction toolのhook経路を通らないツールは検査対象外です。hookは追加のguardrailであり、sandboxの代替ではありません。
+
+## インストール
+
+Python 3.11以上と`uv`が必要です。
+
+Claude CodeでLLM judgeを利用する場合はClaude extraを含めます。
+
+```bash
+uv tool install '.[claude]'
+agent-sentinel install --target claude
+```
+
+Codexだけで利用する場合はClaude Agent SDKをインストールする必要がありません。
 
 ```bash
 uv tool install .
+agent-sentinel install --target codex
 ```
 
-Then register the hooks with Claude Code:
+両方へ登録する場合は次を実行します。
 
 ```bash
-claude-sentinel install
+uv tool install '.[claude]'
+agent-sentinel install --target all
 ```
 
-This adds `claude-sentinel` as a `PreToolUse` hook in `~/.claude/settings.json`. A backup (`settings.json.bak`) is created automatically. Installing also removes any hook left by an earlier layout (e.g. a `PermissionRequest` entry) so only one sentinel hook fires.
+Codex installerは既存の`hooks.json`を非破壊でmergeし、専用の`agent-sentinel.rules`を生成します。変更対象がすでに存在する場合は同じ場所へ`.bak`を保存します。インストール後はCodexで`/hooks`を開き、新しいhookを確認してtrustしてください。
 
-To remove:
+削除時はhookと専用rulesファイルの両方を取り除き、他のhookと`default.rules`を保持します。
 
 ```bash
-claude-sentinel uninstall
+agent-sentinel uninstall --target claude
+agent-sentinel uninstall --target codex
+agent-sentinel uninstall --target all
 ```
 
-## How it works
+## Codexの推奨構成
 
-Every Bash command and file path (Read/Write/Edit/MultiEdit) is evaluated through a multi-stage pipeline:
+推奨する層構成は`workspace-write`、`on-request`、auto-review、agent-sentinelのexecution rules、PreToolUse hookです。
 
-```
-stdin JSON → RULE_DENY → RULE_ASK → RULE_ALLOW → LLM_JUDGE / LLM_JUDGE_READ → stdout JSON
-```
-
-| Stage | Method | Speed | Description |
-|-------|--------|-------|-------------|
-| RULE_DENY | Regex deny list | Instant | Blocks known-dangerous commands (e.g. `sudo`, `rm -rf /`, `curl \| bash`) |
-| RULE_ASK | Regex ask list | Instant | Prompts user confirmation for commands that need review (e.g. `ssh`, `systemctl`) |
-| RULE_ALLOW | Regex allow list | Instant | Permits known-safe commands (e.g. `ls`, `git status`, `make`) |
-| LLM_JUDGE | LLM judge (haiku) | ~2-5s | Evaluates ambiguous commands; inline code (`node -e`, `python -c`) lands here so the judge reads the code |
-| LLM_JUDGE_READ | LLM judge + Read tool | ~5-15s | Runs when a command executes a script **file outside the project**; the judge reads the script before deciding |
-
-### Compound Bash commands
-
-Bash commands are not matched as a single string. A small in-house splitter (no external dependency) walks the command, tracks quoting and escaping, and finds **every individual command** inside pipelines (`|`, `|&`), lists (`&&`, `||`, `;`, `&`, newline), command substitutions (`$(…)`, `` `…` ``), process substitutions (`<(…)`, `>(…)`), subshells (`(…)`), and parameter expansions (`${…}`). Each segment is evaluated independently against DENY → ASK → ALLOW, and the overall decision is the strictest result:
-
-```
-deny  >  ask  >  llm_read  >  llm  >  allow
+```toml
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
 ```
 
-So `cd infra && terraform apply -auto-approve` is split into `cd infra` (allow) and `terraform apply -auto-approve` (ask), and the result is **ask** — the dangerous segment cannot be hidden behind a permissive prefix. If even one segment matches no rule, the command falls through to the LLM judge with the full original string for context.
+agent-sentinelは`config.toml`を書き換えません。installerは安全機能を無効化する設定を検出したときだけ警告します。
 
-The splitter only models what it needs to find command boundaries; constructs it does not handle (heredocs `<<EOF`, ANSI-C quoting `$'…'`, `case` statements, unbalanced quotes/parens) are deferred to the LLM judge rather than punting to the human. Before falling through, the deny regex set is run against the full command string as a defense-in-depth pre-filter, so clear-cut dangerous patterns (e.g. `sudo`, `rm -rf /`, `curl … | sh`) are blocked even when the splitter cannot tokenize the command. A parser limitation can never silently *allow* a dangerous command — it can only widen the set of commands that flow through LLM evaluation, which itself falls back to **ask** on timeout or error.
+- `features.hooks = false`：hook DENYが動作しません。canonical keyがない場合は旧`features.codex_hooks = false`も警告対象です。
+- `approval_policy = "never"`：生成したprompt ruleに一致するコマンドは承認できず失敗します。同時にネイティブ承認とauto-reviewが使われないため、Codexへ委譲した操作のうちsandbox内で完結するものは意味的レビューなしで実行される可能性があります。
 
-### Prefix normalization
+`never`でもprompt ruleが自動許可されることはありません。Codex CLI 0.147.0では`approval required by policy, but AskForApproval is set to Never`としてfail-closedになることを確認しています。
 
-Rules are matched twice for each segment: once against the original command, then against a **normalized** form. This lets a single rule like `^\s*git\s+(diff|status|...)` match all of `git diff`, `git -c color.ui=never diff`, `git --no-pager diff`, and `git -C /tmp/repo diff` without enumerating every wrapper. Stripping is whitelist-only — for each known program (git, npm, yarn, pnpm, bun, uv, cargo, go, make, docker, gh, kubectl, aws, gcloud) only documented prefix options like `-c`, `-C`, `--no-pager`, `--silent`, `-q`, `-R`, `-j`, `--config`, `--region` are removed. An unknown option halts stripping (safe fallback), and options after the subcommand (`git push --force`, `npm run test --silent`) are never touched.
+Codexのexecution rules、approvals、hooksの仕様はOpenAIの公式ドキュメントを参照してください。
 
-Normalization also strips leading **wrapper tokens** that would otherwise let a dangerous command slip past a start-anchored rule: the `!` negation and the `do`/`then`/`else`/`command`/`exec`/`builtin`/`time`/`nohup` prefixes, plus argument-taking **command runners** (`env [VAR=val]…`, `timeout [opts] DURATION`, `nice`, `ionice`, `stdbuf`). So `! kill -0 1` matches the `kill` ASK rule, `do rm -rf "$x"` (a loop body) matches the recursive-`rm` ASK rule, `! rm -rf /` matches `rm-rf-root`, and `env sudo apt` / `timeout 60 kill -1` match the `sudo` / `kill-broadcast` DENY rules. Condition keywords (`while`/`until`/`for`/`if`/`case`) are left intact. The same normalization is applied to ALLOW, ASK, and DENY matching, so none of these prefixes can be used to slip past confirmation rules.
+- [Rules](https://learn.chatgpt.com/docs/agent-configuration/rules)
+- [Agent approvals & security](https://learn.chatgpt.com/docs/agent-approvals-security)
+- [Auto-review](https://learn.chatgpt.com/docs/sandboxing/auto-review)
+- [Hooks](https://learn.chatgpt.com/docs/hooks)
 
-**Inline scripts are recursed into.** A `bash -c "<script>"` / `sh -c` / `eval "<script>"` argument would otherwise be one opaque segment matched by the permissive shell-run allow rule, hiding whatever the script does. The splitter dequotes the inline script and evaluates its commands under the same rules, so `bash -c "while true; do gh pr comment 1; done"` is denied like a bare loop. If the inner script is itself unparseable, the whole command is routed to the deny prefilter and the LLM judge rather than auto-allowed.
+## 判定パイプライン
 
-**Loops.** `while`/`until` and C-style `for (( … ))` are denied (unbounded). A `for` over a literal list (`for pr in 1 2 3`) is allowed; a `for` whose iterator is a command substitution (`for i in $(seq …)`) is left for the LLM judge, which denies unbounded/side-effecting fan-out.
+Claude Codeでは次の順に判定します。
 
-**Interpreters are not blanket-allowed.** `node`, `python`, `ruby`, `perl`, and the shells run arbitrary code, so their broad allow rules (`node-run`, `python-run`, `zsh-run`) are intercepted before they fire:
+```text
+host JSON → RULE_DENY → deletion scope → RULE_ASK → RULE_ALLOW → LLM_JUDGE
+```
 
-- **Inline code** — `node -e/-p/--eval/--print`, `python -c`, `ruby -e`, `perl -e` — is routed to `LLM_JUDGE`. The code lives in the command string, so the judge reads it directly. (This closes the gap where `node -e 'process.kill(…)'` was auto-allowed.)
-- **A script file outside the project** — e.g. `bash /tmp/x.sh`, `node /tmp/y.js` — is routed to `LLM_JUDGE_READ`. The script path is resolved against the working directory; anything not under it triggers a judge that is granted the built-in `Read` tool (scoped to the script's directory) to inspect the file before deciding. Scripts **inside** the project stay auto-allowed as ordinary local development.
+Codexでは各層が独立して最も厳しい結果を採ります。
 
-**Recursive `rm` is judged by where it points.** A single `rm-recursive` ask rule cannot tell a scratch directory from a source tree, so before ASK runs, the targets of a recursive `rm` are resolved — through the literal variable assignments earlier in the same command line, so `S=/tmp/scratch; rm -rf $S` resolves as well as `rm -rf /tmp/scratch` — and each one is classified:
+```text
+sandbox
+  + agent-sentinel.rules（prompt / forbidden）
+  + native approval / auto-review
+  + PreToolUse（denyのみ）
+```
 
-| Target | Decision |
-|--------|----------|
-| The filesystem root or the home directory, however it is written (`/`, `~/`, `$HOME`, `"$HOME"`, or behind a flag as in `rm -rf --no-preserve-root /`) | **deny** |
-| Below a temp root (`/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`) | **allow** |
-| A temp root itself, including the `<root>/*` form the shell expands to everything in it | **deny** |
-| Inside the working directory, tracked by git | **deny** — `git rm -r <path>` leaves the content in HEAD |
-| Inside the working directory, matching a `.gitignore` rule (`build`, `.next`, `node_modules`) | **allow** — a secret is ignored too, and the deny stage below has already stopped it |
-| Inside the working directory, untracked and not ignored | **deny** where `git discard` is configured (it snapshots to `refs/discard/*` first), otherwise **ask** |
-| Inside the working directory, nonexistent — nothing to delete | **allow** |
-| Anything else, an unresolved `$VAR`, or a word the shell expands (`build/*`, `{src,tests}`) outside a temp root | **ask** (the `rm-recursive` rule) |
+複合Bashコマンドはパイプ、`&&`、`;`、substitutionなどの各segmentへ分割します。Claude Codeでは全segmentの最も厳しい結果を採用します。Codex hookもすべてのsegmentに静的DENYとhook担当のASK規則を適用します。
 
-`$TMPDIR` and `$HOME` are read from the hook's own environment, which is the shell's. Only assignments of a literal value count, and a name assigned two different values in one command line (`S=/etc/x || S=/tmp/x`) resolves to nothing — which of the two runs depends on the operator between them. Redirections in the segment (`rm -rf /tmp/scratch > out.log`) are not targets. A word the shell expands is only classified where the expansion cannot change the answer — every path `/tmp/session/*` reaches is below a temp root; anything else expanded falls through to **ask**.
+主な判定例は次のとおりです。
 
-The strictest target decides the segment. The git questions (`rev-parse --show-toplevel`, `ls-files`, `check-ignore`, `config --get alias.discard`) are the only subprocesses the hook runs, and only for a recursive `rm` aimed inside the working directory; a probe that fails or exceeds its one-second budget counts as unknown and falls back to **ask**.
+- DENY：`sudo`、rootやhomeの再帰削除、main/masterへのforce push、secret pathへのアクセス、無限loop
+- ASK / prompt：`ssh`、publish、通常形のGit mutation、外部影響を持つCLI
+- ALLOW：`ls`、`git status`、build・test・lint、read-onlyなcloud操作、通常のproject内編集
 
-File tools (`Read`, `Write`, `Edit`, `MultiEdit`) are protected in two layers. The `PreToolUse` hook fires on every tool call, so its sensitive-path evaluation now sees even calls a `permissions.allow` rule would auto-approve — but the hook is not guaranteed to fire on the sub-agent and background paths, so the `settings.json` layer is kept as defense-in-depth:
+正確なClaude Code向けルールは以下を参照してください。
 
-1. **`permissions.deny` entries in `settings.json`** (generated by the installer from the `path_glob` field of each sensitive path rule, e.g. `Read(**/.env)`, `Edit(**/.ssh/**)`). Only `Read(...)` and `Edit(...)` rules are generated — Claude Code ignores `Write(...)` file-permission deny rules, and its `Edit(...)` rules already cover every file-editing tool (Write/Edit/MultiEdit/NotebookEdit). Deny rules are evaluated before allow rules and before the hook, so they block sensitive paths even though the installer also adds the bare tools to `permissions.allow` to keep ordinary in-project edits prompt-free.
-2. **The hook's sensitive path evaluation** (`path_regex`) — reads outside the working directory and specially-protected files like `.claude/settings.json`.
+- [`deny.toml`](src/agent_sentinel/rules/deny.toml)
+- [`ask.toml`](src/agent_sentinel/rules/ask.toml)
+- [`allow.toml`](src/agent_sentinel/rules/allow.toml)
 
-Read-only tools with no side effects (`Grep`, `Glob`, `WebFetch`, `WebSearch`, Slack read/search tools, Notion read/query tools) are auto-allowed without evaluation.
+### 機密パス
 
-Tools with external impact (e.g. Slack send/schedule/canvas tools, Notion create/update/duplicate/move tools) require user confirmation (ASK).
+`.env`、`.ssh/`、`.aws/`、`.kube/config`、private key、cloud credential、package registry credentialなどはBashとファイルツールの双方で拒否します。Claude Codeでは`permissions.deny`も生成して二重に保護します。
 
-## Deny rules (RULE_DENY)
+Codexの`apply_patch`ではAdd、Update、Delete、Moveの全対象パスを抽出し、一つでも機密パスに一致すればpatch全体を拒否します。対象パスを抽出できないpatchも拒否します。
 
-| Rule | Pattern |
-|------|---------|
-| `rm-rf-root` | `rm -rf /`, `rm -rf ~`, `rm -rf $HOME`, `rm -rf /tmp`, `rm -rf /var/tmp` |
-| `secret-path:<path rule>` | Any command naming a sensitive path, or the directory holding them (`~/.ssh`) — `cat`, `cp`, `mv`, `rm`, `trash`, `ln`, `tar`, `scp`, a redirection target, a `--env-file=` value — see "Sensitive path deny rules" |
-| `rm-root-target` / `rm-temp-root` / `rm-tracked-path` / `rm-untracked-path` | Decided by the deletion scope, not a regex — see "`rm` is judged by where it points" |
-| `sudo` | Any command starting with `sudo` |
-| `fork-bomb` | `:(){ :\|:& };:` pattern |
-| `busy-wait-noop` | A loop body that is only a no-op (`do :`, `do true`, `do continue`) — an infinite CPU spin |
-| `while-loop` / `until-loop` | `while`/`until` loops — a single approval cannot bound how many times a side-effecting body runs |
-| `for-cstyle` | C-style `for (( … ))` (e.g. `for (( ; ; ))`) — unbounded loop. List-form `for x in …` stays allowed |
-| `watch` | `watch <cmd>` — repeats a command indefinitely |
-| `mkfs` | `mkfs` / `mkfs.ext4` etc. |
-| `dd-zero` | `dd if=/dev/zero` or `/dev/urandom` |
-| `pipe-to-shell` | `curl \| bash`, `wget \| sh` |
-| `force-push-main` | `git push --force` / `-f` to `main`/`master` (allows `--force-with-lease`) |
-| `refspec-force-push-main` | `git push origin +main` refspec force push |
-| `push-delete-main` / `refspec-delete-main` | `git push --delete origin main`, `git push origin :main` |
-| `env-write` | Writing to `.env` files via `>`, `>>`, `tee` (template files `.env.example`/`.sample`/`.template`/`.dist` are exempt) |
-| `dynamic-linker-hijack` | Setting `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH` |
-| `ntn-auth-token` | `ntn auth token` — prints the Notion auth token to stdout (credential exposure) |
-| `aws-credential-read` | `aws secretsmanager get-secret-value`, `ecr get-login-password`, `configure get`, `sts get-session-token` / `assume-role`, `kms decrypt` / `generate-data-key` — print AWS credentials to stdout |
-| `aws-ssm-decrypt` | `aws ssm get-parameter(s)` with `--with-decryption` — decrypts a SecureString to stdout |
+再帰削除は、未作成またはGit ignoredのパスなら許可し、trackedまたは回復可能な`git discard`へ誘導できるuntrackedパスは拒否します。変数やglobを解決できない場合とworkspace外は、Claude CodeではASK、Codexではhook DENYになります。
 
-## Sensitive path deny rules (RULE_DENY)
+## LLM judge
 
-Sensitive files blocked from `Read`, `Write`, `Edit`, and `MultiEdit` tools. Each rule carries both a `path_regex` (used by the hook and by the `sed -i` backdoor check below) and a `path_glob` list (expanded by the installer into `permissions.deny` entries in `settings.json`, which is what protects in-project files — see "How it works"). **No bash command may name one of these paths.** Every word of a command is checked — positionals, a flag's value (`--env-file=.env`), a redirection target (`> ~/.ssh/authorized_keys`) — and the directory holding the files counts too, so `rm -rf ~/.ssh` is blocked as well as `rm ~/.ssh/id_rsa`. There is deliberately no list of verbs: `cat` prints the secret into the conversation, `cp` hands it to an unprotected path, `ln` aliases it, `tar`/`scp` ship it, and the next verb after those is whichever one such a list forgot. Nothing under these rules can create such a file — `Read`, `Edit` and `Write` are all refused — so nothing needs to read, copy, move or delete one; the user does that themselves, or the command works from a template like `.env.example`. A word holding an unresolved `$VAR` goes to the LLM judge, as does a command the splitter cannot read at all — whitespace-splitting a raw string cannot tell an operand from a mention, so a heredoc body naming `.env` would be denied for saying the word. The older `sed -i` check stays as a second layer that does read the raw string. That check denies an in-place `sed -i` / `sed --in-place` whose target file matches one of them — otherwise a bash command would be a backdoor around the protection the file tools enforce:
+Claude hostのjudge backendはClaude Agent SDKです。timeout、SDK error、turn上限ではASKへfallbackします。Claude extraがない環境でjudgeへ到達した場合もSDK import errorをASKとして返します。
 
-| Category | Rule | Pattern |
-|----------|------|---------|
-| Env/config | `env-files` | `.env`, `.env.*` (committed templates `.env.example`/`.sample`/`.template`/`.dist` are exempt; the glob is only `**/.env`, so suffixed secret files rely on the hook `path_regex`) |
-| Env/config | `envrc` | `.envrc` |
-| Env/config | `secrets-files` | `secrets.{yml,yaml,json,toml}` |
-| Env/config | `terraform-vars` | `terraform.tfvars`, `terraform.tfvars.json` |
-| SSH/keys | `ssh-dir` | `.ssh/*` |
-| SSH/keys | `gnupg-dir` | `.gnupg/*` |
-| SSH/keys | `private-key-files` | `*.pem`, `*.key` (excludes `*.pub.pem`) |
-| SSH/keys | `keystore-files` | `*.p12`, `*.pfx`, `*.jks`, `*.keystore` |
-| Cloud | `aws-dir` | `.aws/*` |
-| Cloud | `gcloud-dir` | `.config/gcloud/*` |
-| Cloud | `azure-dir` | `.azure/*` |
-| Cloud | `credentials-json` | `credentials.json`, `client_secret.json`, `service[-_]account*.json` |
-| Cloud | `terraform-rc` | `.terraformrc` |
-| Container | `docker-config` | `.docker/config.json` |
-| Container | `kube-config` | `.kube/config` |
-| Dev tools | `netrc` | `.netrc` |
-| Dev tools | `npmrc` | `.npmrc` |
-| Dev tools | `pypirc` | `.pypirc` |
-| Dev tools | `gh-hosts` | `.config/gh/hosts.yml` |
-| Dev tools | `notion-auth` | `.config/notion/auth.json` (Notion CLI file-based auth, `NOTION_KEYRING=0`) |
-| Dev tools | `maven-settings` | `.m2/settings.xml` |
-| Dev tools | `gradle-properties` | `.gradle/gradle.properties` |
-| Dev tools | `boto-config` | `.boto`, `.s3cfg` |
-| Database | `pgpass` | `.pgpass` |
-| Database | `mycnf` | `.my.cnf` |
-| Other | `htpasswd` | `.htpasswd` |
-| Other | `vault-token` | `.vault-token` |
+Codex経路はClaude SDKやこのLLM judgeを呼びません。意味的判断はCodexのauto-reviewへ委ね、静的ruleに一致しない操作にもhook出力を返しません。
 
-See [`src/claude_sentinel/rules/deny.toml`](src/claude_sentinel/rules/deny.toml) for exact regex patterns.
+## CLI
 
-## Auto-allow tools (AUTO_ALLOW)
-
-Read-only tools with no side effects are automatically allowed without rule evaluation:
-
-- `Grep` — content search
-- `Glob` — file pattern matching
-- `Search` — search
-- `WebFetch` — fetch web content
-- `WebSearch` — web search
-- `mcp__claude_ai_Slack__slack_read_*` — Slack read tools
-- `mcp__claude_ai_Slack__slack_search_*` — Slack search tools
-- `mcp__claude_ai_Notion__notion-fetch` / `notion-search` — Notion fetch/search tools
-- `mcp__claude_ai_Notion__notion-get-*` — Notion get tools (comments, teams, users, async task)
-- `mcp__claude_ai_Notion__notion-query-*` — Notion query tools (data sources, views, meeting notes)
-- `mcp__claude_ai_Notion__notion-download-*` — Notion attachment download
-
-Additionally, file tools are added to `permissions.allow` so ordinary edits never prompt; sensitive paths are blocked by the generated `permissions.deny` entries, and calls that still reach the hook (outside-cwd, `.claude/` files) are checked against the sensitive path rules:
-
-- `Read` — file reading
-- `Write` — file writing
-- `Edit` — file editing
-- `MultiEdit` — multi-edit
-
-## Allow rules (RULE_ALLOW)
-
-Common development commands are auto-approved, including:
-
-- Shell: Bash comments (`#`), shell constructs (`for`, `while`, `if`, `case`, `do`/`done`, `then`/`else`/`fi`, `esac`), `pushd`/`popd`, `zsh`/`bash`/`sh` invocations
-- File operations: `ls`, `cat`, `head`, `tail`, `find`, `grep`, `cp`, `mv`, `mkdir`, `touch`, `rm` (non-recursive; recursive only where the deletion scope allows it), `trash` — none of them on a sensitive path, which the deny stage stops whatever the verb
-- Git: `status`, `log`, `diff`, `add`, `commit`, `revert`, `push` (with `--force-with-lease`), `switch`, `restore --staged`, `rm`, and `discard` — which snapshots the worktree to `refs/discard/*` before destroying it, so no prompt is needed (destructive ops like `reset --hard`, `restore` into the worktree, `switch -f`, `clean` require confirmation)
-- Build tools: `make` (any target; dangerous targets like `deploy`/`publish`/`release`/`push`/`upgrade`/`tf-*`/`terraform-*` are escalated to ASK), `cargo` (safe subcommands only), `go build`, `node`, `bun` (excludes `bun x`), `python`, `uv` (excludes `publish`), `pip` read (`show`/`list`/`freeze`/`check`/`search`/`config get`)
-- Package managers: `npm`/`yarn`/`pnpm` (safe subcommands only, excludes `publish`; `run` allows `test`/`build`/`lint`/`cli`/etc., excludes `deploy`/`publish`/`release`/`push`); `npx`/`pnpx`/`bunx` for safe dev tools (`prettier`, `tsc`, `eslint`, `biome`, `prisma`, `vitest`, `jest`, `playwright`, `shadcn`, `next`, `vite`, etc.; unknown packages require confirmation)
-- Containers: `docker` (safe subcommands only, excludes `push`; `docker compose exec`/`run` require confirmation)
-- Database: `sqlite3`
-- Network: `curl`/`wget` (excludes pipe-to-shell, POST/PUT/DELETE/PATCH methods, and `--data` flags)
-- Cloud: `aws` read operations (`list`, `describe`, `get`, `show`, `wait`, `head`, `filter`, `tail`, `search`, `scan`, `query`, `lookup`, `count`, `check`, `validate`, `estimate`, `preview`, plus `aws s3 ls` and `aws … help`; credential-printing `get` operations are denied — see below), `gcloud` read operations (including `logging read` and `logging tail`)
-- Notion CLI (`ntn`): read operations — `whoami`, `doctor`, `pages get`, `datasources query`/`resolve`, `files get`/`list`/`ls`, and `api ... ls`/`--spec`/`--docs` (endpoint discovery/docs)
-- macOS: `launchctl` read operations (`list`, `print`, `blame`), `plutil` read (`-p`, `-lint`), `sample` (process profiling), `defaults read`, `mdfind` (Spotlight), `log show` (unified log), `fswatch` (filesystem events), `crontab -l`, `atq`
-- Process inspection: `ps`, `pgrep`, `lsof`
-- Utilities: `echo`, `pwd`, `which`, `date`, `sort`, `sed` (`sed -i` on a sensitive path is denied; see below), `awk`, `tar`, `zip`, `zipinfo`, `stat`, `env`, `printenv`
-- Variable assignments: `VAR='value'`, `VAR="value"`, `VAR=word` (static values only; `VAR=$(...)` is split and its inner command is evaluated independently)
-- `export VAR=...` (the inner `$(...)` is split out and evaluated independently)
-
-See [`src/claude_sentinel/rules/allow.toml`](src/claude_sentinel/rules/allow.toml) for the full list.
-
-## Ask rules (RULE_ASK)
-
-Commands that prompt user confirmation without LLM evaluation:
-
-† These rules carry `deny_if = "git-alias-discard"`: they escalate from ASK to DENY where `git config --get alias.discard` resolves, and the denial names `git switch`, `git restore --source= --staged`, and `git discard` as the replacements. Without that alias the rules stay ASK, so a command is never blocked with no alternative to reach for. `claude-sentinel rules --kind ask` marks them.
-
-- `rm -r` / `rm -rf` / `rm --recursive` — recursive file deletion, where the deletion scope does not decide it
-- `git reset --hard` — discard uncommitted changes
-- `git checkout` (all forms) — bundles branch switching with destructive file restore †
-- `git restore <path>` (worktree form) — overwrite uncommitted work; `git restore --staged` moves the index only and stays allowed †
-- `git switch -f` / `--discard-changes` — discard file changes while switching
-- `git clean` — delete untracked files
-- `osascript` — AppleScript execution (GUI control, keystrokes)
-- `docker compose exec` / `docker compose run` — arbitrary command execution in containers
-- `npx` / `pnpx` / `bunx` — arbitrary package execution (safe dev tools like `prettier`, `tsc`, `eslint` are auto-allowed)
-- `bun x` — arbitrary package execution
-- `xargs rm` / `xargs kill` / etc. — piped destructive commands
-- `eval` / `source` / `.` — indirect command execution from variables or files
-- `pkill` / `killall` / `kill` — process termination
-- `ssh` — remote connections
-- `systemctl` — system service management
-- `launchctl load` / `unload` / `bootstrap` etc. — macOS service mutations
-- `crontab -e` / `crontab -r` — crontab editing/removal
-- `deploy` — any command containing "deploy"
-- `make deploy` / `make tf-*` / `make terraform-*` — infrastructure targets
-- `make publish` / `release` / `push` — external-impact make targets (with hyphenated variants)
-- `make upgrade` — upgrade targets (with hyphenated variants)
-- `terraform apply` / `destroy` — infrastructure mutations
-- `pulumi up` / `destroy` — infrastructure mutations
-- `kubectl apply` / `delete` / `create` etc. — Kubernetes mutations
-- `helm install` / `upgrade` / `uninstall` / `rollback` — Helm mutations
-- `npm publish` / `cargo publish` / `uv publish` / `gem push` / `twine upload` — package publishing
-- `docker push` — container registry push
-- `gh pr create` / `merge` / `close`, `gh issue create`, `gh release create`, `gh repo create` etc. — GitHub mutations
-- `gh api ... -X POST/PUT/DELETE/PATCH` — GitHub API mutations
-- `git push --force` / `-f`, `git push origin +branch`, `git push --delete` / `origin :branch` (non-main; `--force-with-lease` is allowed)
-- `curl`/`wget` with `-X POST/PUT/DELETE/PATCH` or `--data` flags — HTTP mutations. Mutations aimed exclusively at a literal loopback host (`localhost`, `127.0.0.1`, `[::1]`) skip ASK and defer to the LLM judge instead, provided the command contains no other host (including bare scheme-less args like `evil.com`, which curl would POST to), no `$`/backtick expansion, and no reroute/second-request flags (`-L`, `--location`, `--resolve`, `--connect-to`, `--proxy`, `--preproxy`, `--interface`, `--dns-*`, `--socks*`, `--next`, `-x`, `-K`, `--config`)
-- `gcloud ... create/delete/deploy/update` etc. — Google Cloud mutations
-- `aws ... create/delete/put/update/send/invoke/run/deploy` etc. and `aws s3 cp/mv/rm/sync/mb/rb/website` — AWS mutations
-- `npm run`/`yarn run`/`pnpm run` with `migrate`/`migration` — database migrations
-- Slack send/schedule/canvas tools (TOOL_ASK)
-- Notion write tools — `notion-create-*`, `notion-update-*`, `notion-duplicate-*`, `notion-move-*` (TOOL_ASK)
-- Notion CLI (`ntn`) mutations — `pages create`/`edit`/`trash`, `files create`, `login`/`logout`/`update`, and `api` calls carrying a write signal (`-X POST/PUT/DELETE/PATCH`, `-d`/`--data`, `--file`)
-
-See [`src/claude_sentinel/rules/ask.toml`](src/claude_sentinel/rules/ask.toml) for the full list.
-
-## CLI usage
-
-### Hook mode (default)
-
-Reads JSON from stdin and writes the hook response to stdout. This is how Claude Code invokes it:
+コマンドをhookなしで検査できます。
 
 ```bash
-echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"},"session_id":"s","cwd":"/tmp"}' | claude-sentinel
+agent-sentinel --test "git status"
+agent-sentinel --test "terraform apply"
+agent-sentinel --host codex --test "terraform apply"
 ```
 
-### Test mode
+`--host codex`は実際のCodex hookと同じdeny-only評価を使います。hookが遮断しないコマンドは`DEFER [CODEX_NATIVE]`と表示され、sandbox、execution rules、ネイティブ承認、auto-reviewへ委譲されます。Claude Agent SDKは呼びません。
 
-Evaluate a command without the full hook protocol:
+ルールとログを確認できます。
 
 ```bash
-claude-sentinel --test "ls -la"
-# ALLOW [RULE_ALLOW]: Allowed by rule: ls
-
-claude-sentinel --test "sudo rm -rf /"
-# DENY [RULE_DENY]: Blocked by deny rule: rm-rf-root
+agent-sentinel rules
+agent-sentinel rules --kind deny --json
+agent-sentinel log --since 30d --json
+agent-sentinel log --path
 ```
 
-### Debug output
+ログはUnixでは`~/.local/share/agent-sentinel/logs/`、Windowsでは`%LOCALAPPDATA%\agent-sentinel\logs\`へ保存します。`AGENT_SENTINEL_LOG_DIR`で変更できます。
 
-Add `--explain` to print the decision reason to stderr:
+## claude-sentinelからの移行
+
+既存のuv toolを置き換えてからhookを更新します。
 
 ```bash
-claude-sentinel --test "ls -la" --explain
+uv tool uninstall claude-sentinel
+uv tool install '.[claude]'
+agent-sentinel install --target claude
 ```
 
-### List rules
+移行期間中は旧CLIの`claude-sentinel`も互換aliasとして利用できます。installerは旧hook commandを新しいcommandへ置き換え、uninstallは両方を除去します。
 
-Display all loaded rules:
+- 配布名：`agent-sentinel`
+- CLI：`agent-sentinel`。旧名は互換alias
+- Python import：`agent_sentinel`
+- ログ環境変数：`AGENT_SENTINEL_LOG_DIR`。旧`CLAUDE_SENTINEL_LOG_DIR`はfallback
+- ログディレクトリ：`agent-sentinel/logs`。旧ログも読み取り可能
+
+## 開発
 
 ```bash
-claude-sentinel rules                          # Show all rules
-claude-sentinel rules --kind deny              # Deny rules only
-claude-sentinel rules --type Read              # Read tool rules only
-claude-sentinel rules --kind deny --type Read  # Combined filter
-claude-sentinel rules --json                   # JSON Lines output
-```
-
-### Hook management
-
-```bash
-claude-sentinel install    # Add hooks to ~/.claude/settings.json
-claude-sentinel uninstall  # Remove hooks from ~/.claude/settings.json
-```
-
-## LLM judge (LLM_JUDGE / LLM_JUDGE_READ)
-
-When a command matches neither deny, allow, nor ask rules — or is an interpreter escalation (see above) — `claude-sentinel` evaluates it with the Claude Agent SDK (`claude-haiku-4-5-20251001`):
-
-- **`LLM_JUDGE`** (no tools, `max_turns=2`) — the default. The judge sees only the command string.
-- **`LLM_JUDGE_READ`** (built-in `Read` tool, `max_turns=6`, scoped to the out-of-project script's directory via `add_dirs`) — used when the command runs a script file outside the project, so the judge can read the script before deciding.
-
-The LLM responds with `ALLOW`, `DENY`, or `ASK`. Clearly dangerous or runaway commands (system-wide data loss, secret exfiltration, killing unowned processes, infinite/busy-wait loops, unbounded repeated external mutations) are denied outright; commands with a single bounded external impact that a human should confirm (publishing, deploying, one-off external mutations) are asked. On timeout, an incomplete result (`error_max_turns`), or any error the decision falls back to `ASK`, which prompts the user for manual approval.
-
-## Project structure
-
-```
-src/claude_sentinel/
-├── cli.py                # Entry point, argparse
-├── evaluator.py          # Multi-stage evaluation engine
-├── hook_io.py            # stdin/stdout JSON handling
-├── rule_engine.py        # TOML rule loading and regex matching
-├── command_normalizer.py # Strip prefix options before matching/grouping
-├── deletion_scope.py     # Verdicts for a recursive rm, by where its targets point
-├── git_probe.py          # Cached read-only git questions: repo, tracked, ignored, discard alias
-├── paths.py              # Resolve a command's path argument, test containment
-├── llm_judge.py          # LLM_JUDGE/LLM_JUDGE_READ: Claude Agent SDK judge
-├── applier.py            # Append validated rules to allow/ask.toml
-├── logger.py             # Evaluation log writer/reader
-├── installer.py          # Hook install/uninstall
-└── rules/
-    ├── deny.toml            # RULE_DENY patterns
-    ├── allow.toml           # RULE_ALLOW patterns
-    ├── ask.toml             # RULE_ASK patterns
-    ├── llm_prompt.txt       # LLM_JUDGE prompt template
-    └── llm_prompt_read.txt  # LLM_JUDGE_READ prompt template (reads out-of-project scripts)
-```
-
-Rule maintenance is driven by an interactive Claude Code slash command:
-
-```
-.claude/commands/update-rules.md  # /update-rules — interactive rule proposer
-```
-
-## Development
-
-```bash
-# Install dev dependencies (ruff, pyright, pytest)
 make install
-
-# Run all checks (lint, format, typecheck, test)
 make check
-
-# Individual targets
-make lint          # Run linter (ruff check)
-make lint-fix      # Run linter with auto-fix
-make fmt           # Format code (ruff format)
-make fmt-check     # Check code formatting
-make typecheck     # Run type checker (pyright)
-make test          # Run tests (pytest)
-make clean         # Remove build artifacts and caches
-
-# Rule maintenance (interactive, opens Claude Code)
-make update-rules
-
-# Test a command locally
-uv run claude-sentinel --test "your-command-here"
 ```
 
-### Rule maintenance workflow
+個別には`make lint`、`make fmt-check`、`make typecheck`、`make test`を利用できます。ルール保守は`make update-rules`でClaude Codeの`/update-rules` workflowを開始します。
 
-When `LLM_JUDGE` fallthroughs pile up in the evaluation log, refresh `allow.toml` / `ask.toml` interactively:
-
-1. `make update-rules` launches Claude Code in **plan mode** with the first prompt set to `/update-rules` — equivalent to running `claude --permission-mode plan -- "/update-rules"`. (You can also start `claude` yourself and type `/update-rules` manually.) The slash command is defined in `.claude/commands/update-rules.md` and drives Claude through the workflow: fetch the LLM_JUDGE log via `claude-sentinel log --json`, fetch existing rules via `claude-sentinel rules --json`, group records by *intent* (not surface form), and propose ALLOW / ASK candidates with rationale and decision tally.
-2. **Iterate.** Tell Claude things like "drop #3", "narrow #5 to `make test:*`", "split #7 into two rules", "this should be ASK not ALLOW". Claude refines until you say "apply".
-3. On approval Claude **edits the TOML files directly**, inserting each new rule into the appropriate `# --- Title Case Section Name ---` section of `allow.toml`/`ask.toml` (or creating a new section when none fits), and adds matching assertions to `tests/test_rules.py`. `deny.toml` is never edited automatically — DENY candidates are surfaced for manual review only.
-4. Claude runs `make check` to confirm the new rules and tests pass, then shows `git diff src/claude_sentinel/rules/ tests/test_rules.py`. Revert anything you disagree with (`git discard <file>`, or `git restore <file>` without the alias).
-5. Commit the approved changes.
-
-Lower-level pieces if you want them:
-
-- `claude-sentinel log --stage LLM_JUDGE --since 30d -n 200 --json` — raw fallthrough records.
-- `claude-sentinel rules --json` — current rule snapshot.
-
-DENY rule additions are never applied automatically. The slash command surfaces DENY candidates so you can add them to `deny.toml` by hand.
-
-Requires Python 3.11+ (uses `tomllib` from the standard library). The only runtime dependency is `claude-agent-sdk` (used by the LLM judge stage); the rule engine and the bash splitter have zero external dependencies.
-
-## Platform support
-
-Works on macOS, Linux, and Windows.
-
-- **Sensitive path rules** match both Unix (`/`) and Windows (`\`) path separators
-- **Logs** are stored in `~/.local/share/claude-sentinel/logs/` on Unix, `%LOCALAPPDATA%\claude-sentinel\logs\` on Windows (override with `CLAUDE_SENTINEL_LOG_DIR`)
-- **Settings** are read from `~/.claude/settings.json` on all platforms
+```text
+src/agent_sentinel/
+├── cli.py
+├── evaluator.py
+├── codex_policy.py
+├── hook_io.py
+├── codex_io.py
+├── installer.py
+├── codex_installer.py
+├── patch_paths.py
+├── rule_engine.py
+├── llm_judge.py
+└── rules/
+```

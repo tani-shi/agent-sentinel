@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_sentinel import logger
+from agent_sentinel import logger
 
 
 @pytest.fixture()
@@ -75,6 +75,29 @@ class TestLogEvaluation:
         with patch("builtins.open", side_effect=PermissionError("denied")):
             # Should not raise
             logger.log_evaluation(_make_hook_input(), "allow", "ok", "RULE_ALLOW", 1.0)
+
+    def test_new_environment_variable_takes_precedence(self, monkeypatch, tmp_path):
+        new_dir = tmp_path / "new"
+        legacy_dir = tmp_path / "legacy"
+        monkeypatch.setenv("AGENT_SENTINEL_LOG_DIR", str(new_dir))
+        monkeypatch.setenv("CLAUDE_SENTINEL_LOG_DIR", str(legacy_dir))
+        assert logger.get_log_dir() == new_dir
+
+    def test_reads_legacy_default_when_new_default_is_empty(self, monkeypatch, tmp_path):
+        new_dir = tmp_path / "new"
+        legacy_dir = tmp_path / "legacy"
+        legacy_dir.mkdir()
+        (legacy_dir / logger.LOG_FILENAME).write_text(
+            json.dumps({"ts": "2026-01-01T00:00:00+00:00", "decision": "allow"}) + "\n"
+        )
+        monkeypatch.delenv("AGENT_SENTINEL_LOG_DIR", raising=False)
+        monkeypatch.delenv("CLAUDE_SENTINEL_LOG_DIR", raising=False)
+        monkeypatch.setattr(logger, "DEFAULT_LOG_DIR", new_dir)
+        monkeypatch.setattr(logger, "LEGACY_LOG_DIR", legacy_dir)
+
+        assert list(logger.iter_logs()) == [
+            {"ts": "2026-01-01T00:00:00+00:00", "decision": "allow"}
+        ]
 
 
 class TestRotation:

@@ -1,10 +1,10 @@
 ---
-description: Interactively propose ALLOW/ASK rule additions for claude-sentinel from recent LLM_JUDGE log entries
-allowed-tools: Bash(claude-sentinel log:*), Bash(claude-sentinel rules:*), Bash(make check:*), Bash(git diff:*), Read, Edit
+description: Interactively propose ALLOW/ASK rule additions for agent-sentinel from recent LLM_JUDGE log entries
+allowed-tools: Bash(agent-sentinel log:*), Bash(agent-sentinel rules:*), Bash(make check:*), Bash(git diff:*), Read, Edit
 ---
 
 You are helping the user maintain `allow.toml` and `ask.toml` for
-claude-sentinel — the Claude Code safety hook that evaluates shell
+agent-sentinel — the coding-agent safety hook that evaluates shell
 commands. Find commands frequently falling through to LLM_JUDGE,
 propose rules that would catch them, refine the proposals
 **interactively** with the user, and then edit the rule files (and
@@ -14,7 +14,7 @@ tests) directly.
 
 1. Fetch recent LLM_JUDGE log records:
    ```
-   claude-sentinel log --json --stage LLM_JUDGE --since 30d -n 200
+   agent-sentinel log --json --stage LLM_JUDGE --since 30d -n 200
    ```
    Each record has: ts, session_id, tool_name, input, cwd, decision,
    stage, reason, elapsed_ms. The `decision` field is what the slow
@@ -23,9 +23,9 @@ tests) directly.
 
 2. Fetch the existing rule sets:
    ```
-   claude-sentinel rules --kind allow --json
-   claude-sentinel rules --kind ask --json
-   claude-sentinel rules --kind deny --json
+   agent-sentinel rules --kind allow --json
+   agent-sentinel rules --kind ask --json
+   agent-sentinel rules --kind deny --json
    ```
 
 3. Group log records by *intent*, not by surface form. Examples of
@@ -69,8 +69,8 @@ tests) directly.
 8. When the user approves, **edit the TOML files directly** with the
    `Edit` tool, inserting each new rule into the appropriate Title
    Case section:
-   - ALLOW additions → `src/claude_sentinel/rules/allow.toml`
-   - ASK additions → `src/claude_sentinel/rules/ask.toml`
+   - ALLOW additions → `src/agent_sentinel/rules/allow.toml`
+   - ASK additions → `src/agent_sentinel/rules/ask.toml`
    - Never write to `deny.toml`.
 
    Both files are organized into thematic sections marked with
@@ -139,7 +139,7 @@ tests) directly.
 
 11. Show the user the resulting diff:
     ```
-    git diff src/claude_sentinel/rules/ tests/test_rules.py
+    git diff src/agent_sentinel/rules/ tests/test_rules.py
     ```
     Ask whether to keep, revert (`git checkout -- <file>`), or refine
     further.
@@ -161,8 +161,8 @@ Each `[[rules]]` regex must:
 
 - Use ONLY the tools listed in `allowed-tools`. No other Bash
   commands; no editing of files outside
-  `src/claude_sentinel/rules/allow.toml`,
-  `src/claude_sentinel/rules/ask.toml`, and `tests/test_rules.py`.
+  `src/agent_sentinel/rules/allow.toml`,
+  `src/agent_sentinel/rules/ask.toml`, and `tests/test_rules.py`.
 - Do not edit `deny.toml`. DENY changes always require manual human
   review.
 - If the user asks for something outside this workflow (refactoring,
