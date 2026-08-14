@@ -2,8 +2,8 @@
 
 import pytest
 
-from claude_sentinel import deletion_scope, git_probe
-from claude_sentinel.rule_engine import (
+from agent_sentinel import deletion_scope, git_probe
+from agent_sentinel.rule_engine import (
     _expand_fragments,
     evaluate_bash_command,
     evaluate_command,

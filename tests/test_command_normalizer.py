@@ -1,6 +1,6 @@
 """Tests for command_normalizer module."""
 
-from claude_sentinel.command_normalizer import (
+from agent_sentinel.command_normalizer import (
     get_multi_token_commands,
     normalize_for_analysis,
     normalize_for_matching,

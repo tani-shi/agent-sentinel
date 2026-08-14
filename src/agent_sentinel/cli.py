@@ -1,4 +1,4 @@
-"""CLI entry point for claude-sentinel."""
+"""CLI entry point for agent-sentinel."""
 
 from __future__ import annotations
 
@@ -9,7 +9,9 @@ import time
 from pathlib import Path
 from typing import IO
 
-from claude_sentinel import (
+from agent_sentinel import (
+    codex_installer,
+    codex_io,
     evaluator,
     hook_io,
     installer,
@@ -20,8 +22,19 @@ from claude_sentinel import (
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="claude-sentinel",
-        description="Claude Code hook for evaluating tool permission requests",
+        prog="agent-sentinel",
+        description="Claude Code and Codex hook for evaluating tool permission requests",
+    )
+    parser.add_argument(
+        "--host",
+        choices=["claude", "codex"],
+        default="claude",
+        help="Hook protocol to use (default: claude)",
+    )
+    parser.add_argument(
+        "--judge",
+        choices=["claude", "disabled"],
+        help="Judge backend (default: claude for Claude, disabled for Codex)",
     )
     parser.add_argument(
         "--explain",
@@ -35,21 +48,19 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     subparsers = parser.add_subparsers(dest="subcommand")
-    install_parser = subparsers.add_parser(
-        "install", help="Install hooks into Claude Code settings"
-    )
+    install_parser = subparsers.add_parser("install", help="Install hooks into an agent host")
+    install_parser.add_argument("--target", choices=["claude", "codex", "all"], default="claude")
     install_parser.add_argument(
         "--path",
         metavar="FILE",
-        help="Path to settings.json (default: ~/.claude/settings.json)",
+        help="Override the selected host configuration path",
     )
-    uninstall_parser = subparsers.add_parser(
-        "uninstall", help="Remove hooks from Claude Code settings"
-    )
+    uninstall_parser = subparsers.add_parser("uninstall", help="Remove hooks from an agent host")
+    uninstall_parser.add_argument("--target", choices=["claude", "codex", "all"], default="claude")
     uninstall_parser.add_argument(
         "--path",
         metavar="FILE",
-        help="Path to settings.json (default: ~/.claude/settings.json)",
+        help="Override the selected host configuration path",
     )
 
     # rules subcommand
@@ -102,14 +113,12 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.subcommand == "install":
         settings_path = Path(args.path) if args.path else None
-        msg = installer.install(settings_path)
-        print(msg)
+        _run_install(args.target, settings_path)
         return
 
     if args.subcommand == "uninstall":
         settings_path = Path(args.path) if args.path else None
-        msg = installer.uninstall(settings_path)
-        print(msg)
+        _run_uninstall(args.target, settings_path)
         return
 
     if args.subcommand == "rules":
@@ -120,12 +129,31 @@ def main(argv: list[str] | None = None) -> None:
         _run_log(args)
         return
 
+    judge = args.judge or ("disabled" if args.host == "codex" else "claude")
     if args.test:
-        _run_test(args.test, explain=args.explain)
+        _run_test(args.test, host=args.host, judge=judge, explain=args.explain)
         return
 
     # Default: hook mode — read from stdin, evaluate, write to stdout
-    _run_hook(explain=args.explain)
+    _run_hook(host=args.host, judge=judge, explain=args.explain)
+
+
+def _run_install(target: str, path: Path | None) -> None:
+    if target == "all" and path is not None:
+        raise SystemExit("Error: --path cannot be combined with --target all")
+    if target in ("claude", "all"):
+        print(installer.install(path))
+    if target in ("codex", "all"):
+        print(codex_installer.install(path))
+
+
+def _run_uninstall(target: str, path: Path | None) -> None:
+    if target == "all" and path is not None:
+        raise SystemExit("Error: --path cannot be combined with --target all")
+    if target in ("claude", "all"):
+        print(installer.uninstall(path))
+    if target in ("codex", "all"):
+        print(codex_installer.uninstall(path))
 
 
 def _run_rules(args: argparse.Namespace) -> None:
@@ -199,7 +227,15 @@ def _print_rule_section(kind: str, rule_type: str, rules: list) -> None:
             print(f"  {'':<{max_name}}  [{_DENY_IF_LABELS.get(rule.deny_if, rule.deny_if)}]")
 
 
-def _run_test(command: str, *, explain: bool = False) -> None:
+def _evaluate_hook_input(
+    hook_input: dict, *, host: str, judge: str
+) -> tuple[str, str, str] | None:
+    if host == "codex":
+        return evaluator.evaluate_codex(hook_input)
+    return evaluator.evaluate(hook_input, judge=judge)
+
+
+def _run_test(command: str, *, host: str, judge: str, explain: bool = False) -> None:
     """Test a command with synthetic hook input."""
     import os
 
@@ -212,11 +248,14 @@ def _run_test(command: str, *, explain: bool = False) -> None:
     }
 
     t0 = time.monotonic()
-    result = evaluator.evaluate(hook_input)
+    result = _evaluate_hook_input(hook_input, host=host, judge=judge)
     elapsed_ms = (time.monotonic() - t0) * 1000
 
     if result is None:
-        print("PASS (unknown tool, passthrough)")
+        if host == "codex":
+            print("DEFER [CODEX_NATIVE]: No hook denial; Codex native policy applies")
+        else:
+            print("PASS (unknown tool, passthrough)")
         return
 
     decision, reason, stage = result
@@ -227,16 +266,25 @@ def _run_test(command: str, *, explain: bool = False) -> None:
         print(f"  Command: {command}", file=sys.stderr)
 
 
-def _run_hook(*, explain: bool = False) -> None:
+def _run_hook(*, host: str, judge: str, explain: bool = False) -> None:
     """Run in hook mode: read stdin JSON, evaluate, write stdout JSON."""
     try:
         hook_input = hook_io.read_input()
     except Exception as e:
+        if host == "codex":
+            codex_io.write_output("deny", f"Invalid hook input: {e}")
+            return
         print(f"Error reading input: {e}", file=sys.stderr)
         sys.exit(1)
 
     t0 = time.monotonic()
-    result = evaluator.evaluate(hook_input)
+    try:
+        result = _evaluate_hook_input(hook_input, host=host, judge=judge)
+    except Exception as error:
+        if host == "codex":
+            codex_io.write_output("deny", f"Policy evaluation failed: {error}")
+            return
+        raise
     elapsed_ms = (time.monotonic() - t0) * 1000
 
     if result is None:
@@ -248,9 +296,12 @@ def _run_hook(*, explain: bool = False) -> None:
 
     if explain:
         tool_name = hook_input.get("tool_name", "")
-        print(f"[claude-sentinel] {tool_name}: {decision} [{stage}] {reason}", file=sys.stderr)
+        print(f"[agent-sentinel] {tool_name}: {decision} [{stage}] {reason}", file=sys.stderr)
 
-    hook_io.write_output(decision, reason)
+    if host == "codex":
+        codex_io.write_output(decision, reason)
+    else:
+        hook_io.write_output(decision, reason)
 
 
 def _run_log(args: argparse.Namespace) -> None:

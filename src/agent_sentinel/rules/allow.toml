@@ -512,15 +512,19 @@ command_regex = '''^\s*printf(\s|$)'''
 name = "brew-read"
 command_regex = '''^\s*brew\s+(list|info|search|leaves|deps|uses|outdated|doctor|config|--version|home|cat|desc|log|tap-info|analytics)(\s|$)'''
 
-# --- Claude Ecosystem ---
+# --- Agent Ecosystem ---
 
 [[rules]]
 name = "claude-cli-read"
 command_regex = '''^\s*claude\s+(plugin\s+(list|marketplace)|plugins?\s+list|--version|version|sessions?\s+(list|show)|config\s+(list|get))(\s|$)'''
 
 [[rules]]
-name = "claude-sentinel-read"
-command_regex = '''^\s*claude-sentinel\s+(log|test|--test|rules|version)(\s|$)'''
+name = "agent-sentinel-read"
+command_regex = '''^\s*(agent-sentinel|claude-sentinel)\s+(log|test|--test|rules|version)(\s|$)'''
+
+[[rules]]
+name = "codex-cli-version"
+command_regex = '''^\s*codex\s+(-V|--version)(\s|$)'''
 
 # --- Other CLIs ---
 

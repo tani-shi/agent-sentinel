@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_sentinel.evaluator import evaluate
-from claude_sentinel.rule_engine import reset_cache
+from agent_sentinel.evaluator import evaluate, evaluate_codex
+from agent_sentinel.rule_engine import reset_cache
 
 
 @pytest.fixture(autouse=True)
@@ -68,7 +68,7 @@ class TestBashEvaluation:
         assert decision == "allow"
         assert stage == "RULE_ALLOW"
 
-    @patch("claude_sentinel.llm_judge.evaluate", return_value=("allow", "Safe"))
+    @patch("agent_sentinel.llm_judge.evaluate", return_value=("allow", "Safe"))
     def test_stage3_llm_fallback(self, mock_llm):
         hook_input = {
             "tool_name": "Bash",
@@ -79,7 +79,7 @@ class TestBashEvaluation:
         assert stage == "LLM_JUDGE"
         mock_llm.assert_called_once_with("some-obscure-command --flag", "/tmp")
 
-    @patch("claude_sentinel.llm_judge.evaluate", return_value=("deny", "Dangerous"))
+    @patch("agent_sentinel.llm_judge.evaluate", return_value=("deny", "Dangerous"))
     def test_stage3_deny(self, mock_llm):
         hook_input = {
             "tool_name": "Bash",
@@ -153,6 +153,138 @@ class TestBashEvaluation:
         decision, reason, stage = evaluate(hook_input)
         assert decision == "ask"
         assert stage == "RULE_ASK"
+
+
+class TestApplyPatchEvaluation:
+    def test_allows_ordinary_file(self):
+        result = evaluate(
+            {
+                "tool_name": "apply_patch",
+                "tool_input": {
+                    "command": "*** Begin Patch\n*** Update File: src/app.py\n*** End Patch"
+                },
+                "cwd": "/work",
+            }
+        )
+        assert result == ("allow", "No sensitive path rule matched", "RULE_ALLOW")
+
+
+class TestCodexEvaluation:
+    def test_static_deny_is_blocked(self):
+        result = evaluate_codex(
+            {"tool_name": "Bash", "tool_input": {"command": "sudo id"}, "cwd": "/tmp"}
+        )
+        assert result is not None
+        assert result[0] == "deny"
+
+    def test_prompt_rule_is_left_to_execpolicy(self):
+        result = evaluate_codex(
+            {"tool_name": "Bash", "tool_input": {"command": "ssh host"}, "cwd": "/tmp"}
+        )
+        assert result is None
+
+    def test_native_ask_is_left_to_codex(self):
+        result = evaluate_codex(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "git push --force origin feature"},
+                "cwd": "/tmp",
+            }
+        )
+        assert result is None
+
+    def test_recursive_rm_is_blocked(self):
+        result = evaluate_codex(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf $TARGET"},
+                "cwd": "/tmp",
+            }
+        )
+        assert result is not None
+        assert result[0] == "deny"
+        assert "git discard --untracked" in result[1]
+
+    def test_hybrid_direct_form_is_left_to_execpolicy(self):
+        result = evaluate_codex(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "git commit -m message"},
+                "cwd": "/tmp",
+            }
+        )
+        assert result is None
+
+    def test_hybrid_variant_is_blocked(self):
+        result = evaluate_codex(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "git -C repo commit -m message"},
+                "cwd": "/tmp",
+            }
+        )
+        assert result is not None
+        assert result[0] == "deny"
+
+    @patch("agent_sentinel.llm_judge.evaluate")
+    def test_unmatched_command_does_not_call_judge(self, judge):
+        result = evaluate_codex(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "unknown-command"},
+                "cwd": "/tmp",
+            }
+        )
+        assert result is None
+        judge.assert_not_called()
+
+
+class TestApplyPatchDenyEvaluation:
+    @pytest.mark.parametrize("operation", ["Add File", "Update File", "Delete File"])
+    def test_blocks_sensitive_path(self, operation):
+        decision, reason, stage = evaluate(
+            {
+                "tool_name": "apply_patch",
+                "tool_input": {
+                    "command": f"*** Begin Patch\n*** {operation}: .env\n*** End Patch"
+                },
+                "cwd": "/work",
+            }
+        )
+        assert decision == "deny"
+        assert "/work/.env" in reason
+        assert stage == "RULE_DENY"
+
+    def test_blocks_sensitive_move_target_in_multi_file_patch(self):
+        decision, reason, stage = evaluate(
+            {
+                "tool_name": "apply_patch",
+                "tool_input": {
+                    "command": (
+                        "*** Begin Patch\n"
+                        "*** Update File: src/app.py\n"
+                        "*** Move to: .ssh/config\n"
+                        "*** Add File: src/other.py\n"
+                        "*** End Patch"
+                    )
+                },
+                "cwd": "/work",
+            }
+        )
+        assert decision == "deny"
+        assert ".ssh/config" in reason
+        assert stage == "RULE_DENY"
+
+    def test_malformed_patch_fails_closed(self):
+        decision, _, stage = evaluate(
+            {
+                "tool_name": "apply_patch",
+                "tool_input": {"command": "not a patch"},
+                "cwd": "/work",
+            }
+        )
+        assert decision == "deny"
+        assert stage == "INPUT_DENY"
 
 
 class TestCompoundCommandRegression:
@@ -241,7 +373,7 @@ class TestCompoundCommandRegression:
             assert decision == "allow", cmd
             assert stage == "RULE_ALLOW", cmd
 
-    @patch("claude_sentinel.llm_judge.evaluate", return_value=("allow", "Safe"))
+    @patch("agent_sentinel.llm_judge.evaluate", return_value=("allow", "Safe"))
     def test_unmatched_segment_falls_through_to_llm(self, mock_llm):
         """One unrecognised segment must invoke the LLM judge with the
         full original command (not just the unmatched segment)."""
@@ -250,7 +382,7 @@ class TestCompoundCommandRegression:
         assert stage == "LLM_JUDGE"
         mock_llm.assert_called_once_with(cmd, "/tmp")
 
-    @patch("claude_sentinel.llm_judge.evaluate", return_value=("allow", "Safe"))
+    @patch("agent_sentinel.llm_judge.evaluate", return_value=("allow", "Safe"))
     def test_malformed_bash_falls_through_to_llm(self, mock_llm):
         # Unparseable bash defers to the LLM judge instead of asking the
         # human — heredocs and other unsupported constructs are exactly

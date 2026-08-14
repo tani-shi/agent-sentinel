@@ -298,11 +298,11 @@ command_regex = '''^\s*fam\s+service\s+(add|remove)(\s|$)'''
 name = "duti-write"
 command_regex = '''^\s*duti\s+(-s\s|[^-])'''
 
-# --- claude-sentinel CLI Mutations ---
+# --- agent-sentinel CLI Mutations ---
 
 [[rules]]
-name = "claude-sentinel-mutate"
-command_regex = '''^\s*claude-sentinel\s+(install|uninstall)(\s|$)'''
+name = "agent-sentinel-mutate"
+command_regex = '''^\s*(agent-sentinel|claude-sentinel)\s+(install|uninstall)(\s|$)'''
 
 # --- Destructive File / Git / Process Operations ---
 

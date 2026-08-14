@@ -5,8 +5,9 @@ from __future__ import annotations
 from fnmatch import fnmatch
 from typing import Any
 
-from claude_sentinel import llm_judge
-from claude_sentinel import rule_engine as rules
+from agent_sentinel import codex_policy, llm_judge
+from agent_sentinel import rule_engine as rules
+from agent_sentinel.patch_paths import extract_paths
 
 # Read-only tools with no side effects: auto-allow without evaluation.
 # Supports fnmatch glob patterns (e.g. "mcp__*__slack_read_*").
@@ -50,7 +51,7 @@ def _matches(tool_name: str, patterns: set[str]) -> bool:
     return any(fnmatch(tool_name, pattern) for pattern in patterns)
 
 
-def evaluate(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
+def evaluate(hook_input: dict[str, Any], *, judge: str = "claude") -> tuple[str, str, str] | None:
     """Evaluate a hook input through the multi-stage system.
 
     Returns:
@@ -60,7 +61,9 @@ def evaluate(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
     tool_input = hook_input.get("tool_input", {})
 
     if tool_name == "Bash":
-        return _evaluate_bash(tool_input, hook_input)
+        return _evaluate_bash(tool_input, hook_input, judge=judge)
+    elif tool_name == "apply_patch":
+        return _evaluate_patch(tool_input, hook_input)
     elif tool_name in FILE_TOOLS:
         return _evaluate_file(tool_input)
     elif _matches(tool_name, AUTO_ALLOW_TOOLS):
@@ -72,7 +75,47 @@ def evaluate(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
         return None
 
 
-def _evaluate_bash(tool_input: dict[str, Any], hook_input: dict[str, Any]) -> tuple[str, str, str]:
+def evaluate_codex(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
+    """Evaluate only policy decisions that Codex cannot safely own."""
+    tool_name = hook_input.get("tool_name", "")
+    tool_input = hook_input.get("tool_input", {})
+
+    if tool_name == "Bash":
+        command = tool_input.get("command", "")
+        cwd = hook_input.get("cwd", ".")
+        result = rules.evaluate_bash_command(command, cwd)
+        if result.decision == "deny":
+            return "deny", result.reason, "RULE_DENY"
+        for ask in rules.effective_ask_matches(command, cwd):
+            if ask.name in codex_policy.HOOK_DENY_ASK_REASONS:
+                return (
+                    "deny",
+                    codex_policy.HOOK_DENY_ASK_REASONS[ask.name],
+                    "CODEX_RULE_DENY",
+                )
+            if ask.name in codex_policy.HYBRID_ASK_RULES and not codex_policy.prompt_covers(
+                ask.name, ask.segment
+            ):
+                return (
+                    "deny",
+                    "This command form cannot be represented by Codex execution rules. "
+                    "Run it yourself after reviewing it.",
+                    "CODEX_RULE_DENY",
+                )
+        return None
+
+    if tool_name == "apply_patch":
+        result = _evaluate_patch(tool_input, hook_input)
+    elif tool_name in FILE_TOOLS:
+        result = _evaluate_file(tool_input)
+    else:
+        return None
+    return result if result[0] == "deny" else None
+
+
+def _evaluate_bash(
+    tool_input: dict[str, Any], hook_input: dict[str, Any], *, judge: str
+) -> tuple[str, str, str]:
     """Evaluate a Bash command via segment-aware rule matching.
 
     The command is split into individual segments by an in-house splitter
@@ -94,6 +137,9 @@ def _evaluate_bash(tool_input: dict[str, Any], hook_input: dict[str, Any]) -> tu
     if decision == "allow":
         return "allow", reason, "RULE_ALLOW"
 
+    if judge == "disabled":
+        return "ask", "No static rule matched and the LLM judge is disabled", "JUDGE_DISABLED"
+
     if decision == "llm_read":
         llm_decision, llm_reason = llm_judge.evaluate(command, cwd, read_dirs=read_dirs)
         return llm_decision, llm_reason, "LLM_JUDGE_READ"
@@ -109,5 +155,24 @@ def _evaluate_file(tool_input: dict[str, Any]) -> tuple[str, str, str]:
     deny_match = rules.match_sensitive_path(file_path)
     if deny_match:
         return "deny", f"Blocked by sensitive path rule: {deny_match.name}", "RULE_DENY"
+
+    return "allow", "No sensitive path rule matched", "RULE_ALLOW"
+
+
+def _evaluate_patch(
+    tool_input: dict[str, Any], hook_input: dict[str, Any]
+) -> tuple[str, str, str]:
+    paths = extract_paths(tool_input.get("command", ""), hook_input.get("cwd", "."))
+    if not paths:
+        return "deny", "Could not determine apply_patch target paths", "INPUT_DENY"
+
+    for file_path in paths:
+        deny_match = rules.match_sensitive_path(file_path)
+        if deny_match:
+            return (
+                "deny",
+                f"Blocked by sensitive path rule: {deny_match.name} ({file_path})",
+                "RULE_DENY",
+            )
 
     return "allow", "No sensitive path rule matched", "RULE_ALLOW"

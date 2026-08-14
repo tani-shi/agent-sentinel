@@ -16,19 +16,28 @@ def _default_log_dir() -> Path:
     if sys.platform == "win32":
         local = os.environ.get("LOCALAPPDATA")
         if local:
+            return Path(local) / "agent-sentinel" / "logs"
+    return Path.home() / ".local" / "share" / "agent-sentinel" / "logs"
+
+
+def _legacy_log_dir() -> Path:
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
             return Path(local) / "claude-sentinel" / "logs"
     return Path.home() / ".local" / "share" / "claude-sentinel" / "logs"
 
 
 DEFAULT_LOG_DIR = _default_log_dir()
+LEGACY_LOG_DIR = _legacy_log_dir()
 LOG_FILENAME = "eval.jsonl"
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 MAX_FILES = 5
 
 
 def get_log_dir() -> Path:
-    """Return the log directory, respecting CLAUDE_SENTINEL_LOG_DIR env var."""
-    env = os.environ.get("CLAUDE_SENTINEL_LOG_DIR")
+    """Return the configured agent-sentinel log directory."""
+    env = os.environ.get("AGENT_SENTINEL_LOG_DIR") or os.environ.get("CLAUDE_SENTINEL_LOG_DIR")
     if env:
         return Path(env)
     return DEFAULT_LOG_DIR
@@ -120,6 +129,8 @@ def iter_logs(
     """
     if log_dir is None:
         log_dir = get_log_dir()
+        if log_dir == DEFAULT_LOG_DIR and not log_dir.exists() and LEGACY_LOG_DIR.exists():
+            log_dir = LEGACY_LOG_DIR
 
     # Collect all log files in order: eval.jsonl (newest), .1, .2, ...
     files: list[Path] = []

@@ -5,7 +5,7 @@ import sys
 import types
 from unittest.mock import patch
 
-from claude_sentinel.llm_judge import (
+from agent_sentinel.llm_judge import (
     _evaluate_sdk,
     _parse_response,
     _read_options,
@@ -44,35 +44,35 @@ class TestParseResponse:
 
 
 class TestEvaluateSDK:
-    @patch("claude_sentinel.llm_judge.asyncio.run", return_value=("allow", "Safe command"))
+    @patch("agent_sentinel.llm_judge.asyncio.run", return_value=("allow", "Safe command"))
     def test_sdk_allow(self, mock_run):
         decision, reason = evaluate("ls -la", "/tmp")
         assert decision == "allow"
         assert reason == "Safe command"
 
-    @patch("claude_sentinel.llm_judge.asyncio.run", return_value=("deny", "Dangerous command"))
+    @patch("agent_sentinel.llm_judge.asyncio.run", return_value=("deny", "Dangerous command"))
     def test_sdk_deny(self, mock_run):
         decision, reason = evaluate("rm -rf /", "/tmp")
         assert decision == "deny"
         assert reason == "Dangerous command"
 
-    @patch("claude_sentinel.llm_judge.asyncio.run", return_value=("ask", "Needs review"))
+    @patch("agent_sentinel.llm_judge.asyncio.run", return_value=("ask", "Needs review"))
     def test_sdk_ask(self, mock_run):
         decision, reason = evaluate("some-command", "/tmp")
         assert decision == "ask"
         assert reason == "Needs review"
 
-    @patch("claude_sentinel.llm_judge.time.sleep")
-    @patch("claude_sentinel.llm_judge.asyncio.run", side_effect=TimeoutError("timed out"))
+    @patch("agent_sentinel.llm_judge.time.sleep")
+    @patch("agent_sentinel.llm_judge.asyncio.run", side_effect=TimeoutError("timed out"))
     def test_sdk_timeout(self, mock_run, mock_sleep):
         decision, reason = evaluate("some-command", "/tmp")
         assert decision == "ask"
         assert "timed out" in reason
         assert mock_run.call_count == 2
 
-    @patch("claude_sentinel.llm_judge.time.sleep")
+    @patch("agent_sentinel.llm_judge.time.sleep")
     @patch(
-        "claude_sentinel.llm_judge.asyncio.run",
+        "agent_sentinel.llm_judge.asyncio.run",
         side_effect=[TimeoutError("timed out"), ("allow", "Safe command")],
     )
     def test_sdk_timeout_then_success(self, mock_run, mock_sleep):
@@ -81,30 +81,39 @@ class TestEvaluateSDK:
         assert reason == "Safe command"
         assert mock_run.call_count == 2
 
-    @patch("claude_sentinel.llm_judge.time.sleep")
-    @patch("claude_sentinel.llm_judge.asyncio.run", side_effect=TimeoutError("timed out"))
+    @patch("agent_sentinel.llm_judge.time.sleep")
+    @patch("agent_sentinel.llm_judge.asyncio.run", side_effect=TimeoutError("timed out"))
     def test_sdk_timeout_backoff_between_retries(self, mock_run, mock_sleep):
         evaluate("some-command", "/tmp")
         # Delay only between attempts, never after the final one.
         assert mock_sleep.call_count == mock_run.call_count - 1
 
-    @patch("claude_sentinel.llm_judge.asyncio.run", side_effect=Exception("connection failed"))
+    @patch("agent_sentinel.llm_judge.asyncio.run", side_effect=Exception("connection failed"))
     def test_sdk_error(self, mock_run):
         decision, reason = evaluate("some-command", "/tmp")
         assert decision == "ask"
         assert "connection failed" in reason
         assert mock_run.call_count == 1
 
+    @patch(
+        "agent_sentinel.llm_judge._plain_options",
+        side_effect=ModuleNotFoundError("No module named 'claude_agent_sdk'"),
+    )
+    def test_missing_sdk_falls_to_ask(self, options):
+        decision, reason = evaluate("some-command", "/tmp")
+        assert decision == "ask"
+        assert "unavailable" in reason
+
 
 class TestReadMode:
-    @patch("claude_sentinel.llm_judge.asyncio.run", return_value=("allow", "ok"))
-    @patch("claude_sentinel.llm_judge._read_options", wraps=_read_options)
+    @patch("agent_sentinel.llm_judge.asyncio.run", return_value=("allow", "ok"))
+    @patch("agent_sentinel.llm_judge._read_options", wraps=_read_options)
     def test_read_dirs_selects_read_options(self, spy_read, mock_run):
         evaluate("bash /tmp/x.sh", "/proj", read_dirs=["/tmp"])
         spy_read.assert_called_once_with("/proj", ["/tmp"])
 
-    @patch("claude_sentinel.llm_judge.asyncio.run", return_value=("allow", "ok"))
-    @patch("claude_sentinel.llm_judge._read_options")
+    @patch("agent_sentinel.llm_judge.asyncio.run", return_value=("allow", "ok"))
+    @patch("agent_sentinel.llm_judge._read_options")
     def test_no_read_dirs_stays_plain(self, spy_read, mock_run):
         evaluate("ls -la", "/proj")
         spy_read.assert_not_called()

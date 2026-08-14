@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from claude_sentinel.installer import (
+from agent_sentinel.installer import (
     _get_managed_permissions,
     install,
     uninstall,
@@ -46,7 +46,7 @@ class TestInstall:
 
         entries = settings["hooks"]["PreToolUse"]
         assert len(entries) == 1
-        assert entries[0]["hooks"][0]["command"] == "claude-sentinel"
+        assert entries[0]["hooks"][0]["command"] == "agent-sentinel --host claude"
 
     def test_install_migrates_legacy_permissionrequest_hook(self, settings_file):
         settings_file.write_text(
@@ -68,7 +68,34 @@ class TestInstall:
         settings = json.loads(settings_file.read_text())
         assert "PermissionRequest" not in settings["hooks"]
         assert len(settings["hooks"]["PreToolUse"]) == 1
-        assert settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "claude-sentinel"
+        assert (
+            settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            == "agent-sentinel --host claude"
+        )
+
+    def test_install_migrates_legacy_command(self, settings_file):
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "*",
+                                "hooks": [{"type": "command", "command": "claude-sentinel"}],
+                            }
+                        ]
+                    }
+                }
+            )
+        )
+
+        install(settings_file)
+
+        settings = json.loads(settings_file.read_text())
+        assert (
+            settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            == "agent-sentinel --host claude"
+        )
 
     def test_install_strips_legacy_multiedit_permissions(self, settings_file):
         settings_file.write_text(
@@ -186,7 +213,7 @@ class TestInstallPermissions:
         assert not any(e.startswith("Write(") for e in deny)
 
     def test_managed_deny_covers_every_sensitive_path_rule(self, managed):
-        from claude_sentinel.rule_engine import get_deny_rules
+        from agent_sentinel.rule_engine import get_deny_rules
 
         for rule in get_deny_rules().sensitive_path_rules:
             assert rule.path_globs, f"{rule.name} has no path_glob"
@@ -298,6 +325,34 @@ class TestUninstall:
         entries = result["hooks"]["PreToolUse"]
         assert len(entries) == 1
         assert entries[0]["hooks"][0]["command"] == "other-hook"
+
+    def test_uninstall_preserves_handler_in_same_group(self, settings_file):
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "*",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "agent-sentinel --host claude",
+                                    },
+                                    {"type": "command", "command": "other-hook"},
+                                ],
+                            }
+                        ]
+                    }
+                }
+            )
+        )
+
+        uninstall(settings_file)
+
+        entry = json.loads(settings_file.read_text())["hooks"]["PreToolUse"][0]
+        assert entry["matcher"] == "*"
+        assert entry["hooks"] == [{"type": "command", "command": "other-hook"}]
 
     def test_uninstall_removes_every_event(self, settings_file):
         sentinel = {"matcher": "*", "hooks": [{"type": "command", "command": "claude-sentinel"}]}

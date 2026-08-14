@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from importlib import resources
 from typing import Any, Literal, NamedTuple
 
-from claude_sentinel import deletion_scope, git_probe, paths
-from claude_sentinel.command_normalizer import (
+from agent_sentinel import deletion_scope, git_probe, paths
+from agent_sentinel.command_normalizer import (
     normalize_for_matching,
     tokenize,
 )
@@ -93,7 +93,7 @@ def load_rules(path: str | None = None, *, kind: str = "deny") -> RuleSet:
         with open(path, "rb") as f:
             data = tomllib.load(f)
     else:
-        rules_pkg = resources.files("claude_sentinel.rules")
+        rules_pkg = resources.files("agent_sentinel.rules")
         filename = f"{kind}.toml"
         content = (rules_pkg / filename).read_text(encoding="utf-8")
         data = tomllib.loads(content)
@@ -876,6 +876,11 @@ class SegmentVerdict(NamedTuple):
     read_paths: tuple[str, ...] = ()
 
 
+class AskMatch(NamedTuple):
+    name: str
+    segment: str
+
+
 def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) -> SegmentVerdict:
     """Evaluate a single segment through DENY -> deletion scope -> ASK ->
     interpreter escalation -> ALLOW.
@@ -910,6 +915,23 @@ def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) ->
     if allow:
         return SegmentVerdict("allow", allow.name)
     return SegmentVerdict("unmatched")
+
+
+def effective_ask_matches(command: str, cwd: str) -> list[AskMatch]:
+    """Return ASK rules that remain after DENY and deletion-scope evaluation."""
+    segments = extract_commands(command)
+    if segments is None:
+        ask = match_ask(command)
+        return [AskMatch(ask.name, command)] if ask else []
+
+    matches: list[AskMatch] = []
+    assignments = deletion_scope.Assignments()
+    for segment in segments:
+        assignments.record(segment)
+        verdict = _evaluate_segment(segment, cwd, assignments)
+        if verdict.decision == "ask":
+            matches.append(AskMatch(verdict.name, segment))
+    return matches
 
 
 Decision = Literal["deny", "ask", "allow", "llm", "llm_read"]
