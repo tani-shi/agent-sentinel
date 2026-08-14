@@ -11,19 +11,21 @@ agent-sentinelはCodexの権限を広げません。生成するexecution rules�
 | Bash | 静的ALLOW / ASK / DENYとLLM judge | execution rulesのprompt / forbiddenと決定論的hook DENY |
 | ファイル操作 | Read / Write / Edit | apply_patch |
 | 機密パス | hookとpermissions.deny | apply_patchをhookで検査 |
-| ASK | PreToolUseから承認を要求 | 前方一致はexecution rules、残りはネイティブ承認へ委譲 |
-| LLMによる意味判断 | Claude Agent SDK | Codexのauto-review |
+| ASK | PreToolUseから承認を要求 | 前方一致はexecution rules、残りはネイティブpolicyへ委譲 |
+| LLMによる意味判断 | Claude Agent SDK | 承認要求が発生した場合のCodex auto-review |
 | インストール先 | `~/.claude/settings.json` | `~/.codex/hooks.json`と`~/.codex/rules/agent-sentinel.rules` |
 
 CodexのPreToolUseはdenyだけを確実に遮断できます。そのため、前方一致で表現できるASKは`.rules`の`prompt`が担当し、hookは静的DENY、機密パス、wrapperや引数を解析する決定論的DENYを担当します。hookはdeny以外では何も出力せず、Codexのsandboxと承認判断を上書きしません。
 
-Codexでは、ASK相当の判定の大半をネイティブ承認とauto-reviewへ委ねます。agent-sentinelが独自に恒久遮断するASKは、回復不能なworkspace変更を守る次の3種類です。
+Codexでは、前方一致で表現できるASKに`prompt`を生成して承認要求を発生させます。auto-reviewを選択している場合、その承認要求をCodexのreviewerが判断します。prefix ruleを生成しないASKはCodexへ委譲され、Codex自身が承認要求を発生させた場合にだけauto-reviewの対象になります。sandbox内で承認なしに実行できる操作をauto-reviewが常に検査するわけではありません。
+
+agent-sentinelが独自に恒久遮断するASKは、回復不能なworkspace変更を守る次の3種類です。
 
 - 判定範囲が確定しない再帰削除
 - worktreeを上書きする`git restore`
 - 変更を破棄する強制的な`git switch`
 
-deploy、make target、HTTP・cloud mutation、main/master以外へのforce pushやremote branch削除など、prefix ruleで既存のread/no-prompt判断を保てない操作にはCodex向けのruleを生成しません。これらはCodexのネイティブ承認とauto-reviewが判断します。通常形を`prompt`、prefixでは表せない変形をhook DENYにする規則もあり、hookは承認画面より先に遮断されることをCodex CLI 0.147.0で確認しています。
+deploy、make target、HTTP・cloud mutation、main/master以外へのforce pushやremote branch削除など、prefix ruleで既存のread/no-prompt判断を保てない操作にはCodex向けのruleを生成しません。これらはCodexのネイティブpolicyへ委譲されます。承認要求が発生すればユーザーまたはauto-reviewが判断しますが、sandbox内で完結する場合は意味的レビューを経ずに実行される可能性があります。通常形を`prompt`、prefixでは表せない変形をhook DENYにする規則もあり、hookは承認画面より先に遮断されることをCodex CLI 0.147.0で確認しています。
 
 Hosted WebSearchなど、ローカルfunction toolのhook経路を通らないツールは検査対象外です。hookは追加のguardrailであり、sandboxの代替ではありません。
 
@@ -99,7 +101,7 @@ Codexでは各層が独立して最も厳しい結果を採ります。
 ```text
 sandbox
   + agent-sentinel.rules（prompt / forbidden）
-  + native approval / auto-review
+  + native approval → auto-review（承認要求が発生し、auto-reviewを選択している場合）
   + PreToolUse（denyのみ）
 ```
 
@@ -129,7 +131,7 @@ Codexの`apply_patch`ではAdd、Update、Delete、Moveの全対象パスを抽�
 
 Claude hostのjudge backendはClaude Agent SDKです。timeout、SDK error、turn上限ではASKへfallbackします。Claude extraがない環境でjudgeへ到達した場合もSDK import errorをASKとして返します。
 
-Codex経路はClaude SDKやこのLLM judgeを呼びません。意味的判断はCodexのauto-reviewへ委ね、静的ruleに一致しない操作にもhook出力を返しません。
+Codex経路はClaude SDKやこのLLM judgeを呼びません。agent-sentinelまたはCodexが承認要求を発生させ、auto-reviewが選択されている場合はCodexのreviewerが意味的判断を行います。承認要求が発生しない操作にはauto-reviewもagent-sentinelのLLM judgeも介入せず、静的ruleに一致しない操作にはhook出力を返しません。
 
 ## CLI
 
@@ -141,7 +143,7 @@ agent-sentinel --test "terraform apply"
 agent-sentinel --host codex --test "terraform apply"
 ```
 
-`--host codex`は実際のCodex hookと同じdeny-only評価を使います。hookが遮断しないコマンドは`DEFER [CODEX_NATIVE]`と表示され、sandbox、execution rules、ネイティブ承認、auto-reviewへ委譲されます。Claude Agent SDKは呼びません。
+`--host codex`は実際のCodex hookと同じdeny-only評価を使います。hookが遮断しないコマンドは`DEFER [CODEX_NATIVE]`と表示され、sandbox、execution rules、ネイティブ承認へ委譲されます。そこで承認要求が発生し、auto-reviewが選択されている場合だけCodexのreviewerが判断します。Claude Agent SDKは呼びません。
 
 ルールとログを確認できます。
 
