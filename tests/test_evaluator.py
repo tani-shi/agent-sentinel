@@ -226,6 +226,63 @@ class TestCodexEvaluation:
         assert result is not None
         assert result[0] == "deny"
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "command go generate ./...",
+            "env go generate ./...",
+            "command git commit -m message",
+            "env git commit -m message",
+            "echo ready && command go generate ./...",
+        ],
+    )
+    def test_prompt_form_not_representable_by_execpolicy_is_blocked(self, command):
+        result = evaluate_codex(
+            {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": "/tmp"}
+        )
+        assert result is not None
+        assert result[0] == "deny"
+        assert result[2] == "CODEX_RULE_DENY"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "/usr/bin/pkill worker",
+            "/usr/bin/xargs pkill",
+            "env /usr/bin/pkill worker",
+            "/usr/bin/env /usr/bin/pkill worker",
+            "/usr/bin/xargs /usr/bin/pkill",
+            "/usr/bin/xargs -0 /usr/bin/pkill",
+            "/usr/bin/xargs -n 1 /usr/bin/pkill",
+            "xargs -e pkill",
+            "xargs -eEOF pkill",
+            "xargs -I{} /usr/bin/killall {}",
+            "echo ready && /usr/bin/pkill worker",
+        ],
+    )
+    def test_absolute_path_static_deny_is_blocked(self, command):
+        result = evaluate_codex(
+            {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": "/tmp"}
+        )
+        assert result is not None
+        assert result[0] == "deny"
+        assert result[2] == "RULE_DENY"
+
+    def test_user_writable_executable_path_is_not_static_allow(self):
+        result = evaluate(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "/tmp/ls"},
+                "cwd": "/tmp",
+            },
+            judge="disabled",
+        )
+        assert result == (
+            "ask",
+            "No static rule matched and the LLM judge is disabled",
+            "JUDGE_DISABLED",
+        )
+
     @patch("agent_sentinel.llm_judge.evaluate")
     def test_unmatched_command_does_not_call_judge(self, judge):
         result = evaluate_codex(

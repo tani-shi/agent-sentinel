@@ -56,8 +56,13 @@ def install(
         message = f"agent-sentinel is already up to date in {hooks_path.parent}"
 
     notices = _configuration_notices(codex_config_path)
-    trust = "Open /hooks in Codex and trust the agent-sentinel hook before using it."
-    return "\n".join((message, trust, *notices))
+    if hooks_changed:
+        notices.insert(
+            0,
+            "Trust the agent-sentinel hook before using it: "
+            "Settings > Hooks in Codex GUI, or /hooks in Codex CLI.",
+        )
+    return "\n".join((message, *notices))
 
 
 def uninstall(path: Path | None = None, *, rules_path: Path | None = None) -> str:

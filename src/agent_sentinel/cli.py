@@ -15,6 +15,7 @@ from agent_sentinel import (
     evaluator,
     hook_io,
     installer,
+    log_analysis,
     logger,
     rule_engine,
 )
@@ -88,11 +89,10 @@ def main(argv: list[str] | None = None) -> None:
         "-n", type=int, default=20, help="Number of records to show (default: 20)"
     )
     log_parser.add_argument(
-        "--decision", choices=["allow", "deny", "ask"], help="Filter by decision"
+        "--decision", choices=["allow", "deny", "ask", "defer"], help="Filter by decision"
     )
     log_parser.add_argument(
         "--stage",
-        choices=["RULE_DENY", "RULE_ALLOW", "RULE_ASK", "LLM_JUDGE", "LLM_JUDGE_READ"],
         help="Filter by stage",
     )
     log_parser.add_argument("--since", help="Show records since (e.g. 1h, 30m, 2d)")
@@ -108,6 +108,26 @@ def main(argv: list[str] | None = None) -> None:
     log_parser.add_argument(
         "--path", action="store_true", help="Print log directory path and exit"
     )
+    log_actions = log_parser.add_subparsers(dest="log_action")
+    annotate_parser = log_actions.add_parser("annotate", help="Attach feedback to an event")
+    annotate_parser.add_argument("event_id", help="Evaluation event ID")
+    annotate_parser.add_argument(
+        "--label",
+        required=True,
+        choices=["false-positive", "missed-deny", "expected-prompt"],
+    )
+    annotate_parser.add_argument("--note", default="", help="Optional feedback note")
+
+    audit_parser = subparsers.add_parser("audit", help="Detect problems in evaluation logs")
+    audit_parser.add_argument("--since", help="Audit events since (e.g. 1h, 30m, 2d)")
+    audit_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    replay_parser = subparsers.add_parser(
+        "replay", help="Re-evaluate logged requests without executing them"
+    )
+    replay_parser.add_argument("--since", help="Replay events since (e.g. 1h, 30m, 2d)")
+    replay_parser.add_argument("--event", help="Replay one evaluation event ID")
+    replay_parser.add_argument("--json", action="store_true", dest="json_output")
 
     args = parser.parse_args(argv)
 
@@ -127,6 +147,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.subcommand == "log":
         _run_log(args)
+        return
+
+    if args.subcommand == "audit":
+        _run_audit(args)
+        return
+
+    if args.subcommand == "replay":
+        _run_replay(args)
         return
 
     judge = args.judge or ("disabled" if args.host == "codex" else "claude")
@@ -253,13 +281,23 @@ def _run_test(command: str, *, host: str, judge: str, explain: bool = False) -> 
 
     if result is None:
         if host == "codex":
-            print("DEFER [CODEX_NATIVE]: No hook denial; Codex native policy applies")
+            owner, stage, reason = evaluator.codex_defer_target(hook_input)
+            logger.log_evaluation(
+                hook_input,
+                "defer",
+                reason,
+                stage,
+                elapsed_ms,
+                host=host,
+                owner=owner,
+            )
+            print(f"DEFER [{stage}]: {reason}")
         else:
             print("PASS (unknown tool, passthrough)")
         return
 
     decision, reason, stage = result
-    logger.log_evaluation(hook_input, decision, reason, stage, elapsed_ms)
+    logger.log_evaluation(hook_input, decision, reason, stage, elapsed_ms, host=host, owner="hook")
     print(f"{decision.upper()} [{stage}]: {reason}")
 
     if explain:
@@ -272,7 +310,9 @@ def _run_hook(*, host: str, judge: str, explain: bool = False) -> None:
         hook_input = hook_io.read_input()
     except Exception as e:
         if host == "codex":
-            codex_io.write_output("deny", f"Invalid hook input: {e}")
+            reason = f"Invalid hook input: {e}"
+            logger.log_evaluation({}, "deny", reason, "INPUT_DENY", 0.0, host=host, owner="hook")
+            codex_io.write_output("deny", reason)
             return
         print(f"Error reading input: {e}", file=sys.stderr)
         sys.exit(1)
@@ -282,17 +322,38 @@ def _run_hook(*, host: str, judge: str, explain: bool = False) -> None:
         result = _evaluate_hook_input(hook_input, host=host, judge=judge)
     except Exception as error:
         if host == "codex":
-            codex_io.write_output("deny", f"Policy evaluation failed: {error}")
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            reason = f"Policy evaluation failed: {error}"
+            logger.log_evaluation(
+                hook_input,
+                "deny",
+                reason,
+                "EVALUATION_ERROR",
+                elapsed_ms,
+                host=host,
+                owner="hook",
+            )
+            codex_io.write_output("deny", reason)
             return
         raise
     elapsed_ms = (time.monotonic() - t0) * 1000
 
     if result is None:
-        # Unknown tool: passthrough (exit 0, no output)
+        if host == "codex":
+            owner, stage, reason = evaluator.codex_defer_target(hook_input)
+            logger.log_evaluation(
+                hook_input,
+                "defer",
+                reason,
+                stage,
+                elapsed_ms,
+                host=host,
+                owner=owner,
+            )
         return
 
     decision, reason, stage = result
-    logger.log_evaluation(hook_input, decision, reason, stage, elapsed_ms)
+    logger.log_evaluation(hook_input, decision, reason, stage, elapsed_ms, host=host, owner="hook")
 
     if explain:
         tool_name = hook_input.get("tool_name", "")
@@ -306,6 +367,14 @@ def _run_hook(*, host: str, judge: str, explain: bool = False) -> None:
 
 def _run_log(args: argparse.Namespace) -> None:
     """Handle the log subcommand."""
+    if args.log_action == "annotate":
+        try:
+            annotation_id = logger.append_annotation(args.event_id, args.label, args.note)
+        except ValueError as error:
+            raise SystemExit(f"Error: {error}") from error
+        print(f"Annotation {annotation_id} added to {args.event_id}")
+        return
+
     if args.path:
         print(logger.get_log_dir())
         return
@@ -336,7 +405,7 @@ def _follow_log(args: argparse.Namespace) -> None:
     log_path = logger.get_log_dir() / logger.LOG_FILENAME
     f: IO[str] | None = None
     try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.prepare_log_dir()
         # Start from end of file if it exists
         try:
             f = open(log_path, encoding="utf-8")
@@ -383,15 +452,93 @@ def _print_record(rec: dict) -> None:
     except (ValueError, TypeError):
         ts_display = ts
 
-    decision = rec.get("decision", "").upper()
-    stage = rec.get("stage", "")
-    tool_name = rec.get("tool_name", "")
-    input_val = rec.get("input", "")
-    reason = rec.get("reason", "")
+    decision_data = rec.get("decision", {})
+    if isinstance(decision_data, dict):
+        decision = str(decision_data.get("result", "")).upper()
+        stage = decision_data.get("stage", "")
+        reason = decision_data.get("reason", "")
+        owner = decision_data.get("owner", "unknown")
+    else:
+        decision = str(decision_data).upper()
+        stage = rec.get("stage", "")
+        reason = rec.get("reason", "")
+        owner = rec.get("owner", "unknown")
+    request = rec.get("request", {})
+    tool_name = request.get("tool", rec.get("tool_name", ""))
+    input_val = request.get("command") or request.get("file_path")
+    if not input_val and request.get("paths"):
+        input_val = ", ".join(request["paths"])
+    if not input_val:
+        input_val = rec.get("input", "")
+    if not input_val and rec.get("input_sha256"):
+        input_val = f"sha256:{rec['input_sha256'][:12]}"
     elapsed = rec.get("elapsed_ms", 0)
+    host = rec.get("host", "unknown")
+    event_id = rec.get("event_id", "")
 
     print(f"{ts_display} {decision} [{stage}] {tool_name}: {input_val}")
-    print(f"  {reason} ({elapsed}ms)")
+    detail = f"{host}/{owner} ({elapsed}ms)"
+    if event_id:
+        detail = f"{detail} event={event_id}"
+    print(f"  {reason + ' ' if reason else ''}{detail}")
+
+
+def _run_audit(args: argparse.Namespace) -> None:
+    since = _parse_since(args.since) if args.since else None
+    events = [
+        event
+        for event in logger.iter_events()
+        if since is None or _event_timestamp(event) >= since
+    ]
+    findings = log_analysis.audit_events(events)
+    if args.json_output:
+        for finding in findings:
+            print(json.dumps(finding, ensure_ascii=False))
+        return
+    if not findings:
+        print("No findings.")
+        return
+    for finding in findings:
+        print(
+            f"{finding['severity'].upper()} {finding['code']} "
+            f"event={finding['event_id']}: {finding['message']}"
+        )
+
+
+def _run_replay(args: argparse.Namespace) -> None:
+    since = _parse_since(args.since) if args.since else None
+    if args.event:
+        event = logger.find_event(args.event)
+        if event is None:
+            raise SystemExit(f"Error: Evaluation event not found: {args.event}")
+        events = [event]
+    else:
+        events = list(logger.iter_logs(since=since))
+    for event in events:
+        result = log_analysis.replay_event(event)
+        if args.json_output:
+            print(json.dumps(result, ensure_ascii=False))
+            continue
+        if not result["replayable"]:
+            print(f"SKIP event={result['event_id']}: {result['reason']}")
+            continue
+        status = "CHANGED" if result["changed"] else "SAME"
+        if result["changed"] is None:
+            status = "NOT_COMPARABLE"
+        current = result["current"]
+        print(
+            f"{status} event={result['event_id']}: "
+            f"{current['result'].upper()} [{current['stage']}] {current['owner']}"
+        )
+
+
+def _event_timestamp(event: dict) -> float:
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(event.get("ts", "")).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _parse_since(value: str) -> float:

@@ -54,7 +54,12 @@ uv tool install '.[claude]'
 agent-sentinel install --target all
 ```
 
-Codex installerは既存の`hooks.json`を非破壊でmergeし、専用の`agent-sentinel.rules`を生成します。変更対象がすでに存在する場合は同じ場所へ`.bak`を保存します。インストール後はCodexで`/hooks`を開き、新しいhookを確認してtrustしてください。
+Codex installerは既存の`hooks.json`を非破壊でmergeし、専用の`agent-sentinel.rules`を生成します。変更対象がすでに存在する場合は同じ場所へ`.bak`を保存します。インストール後はCodexで新しいタスクを開始し、次の画面でagent-sentinel hookを確認してtrustしてください。
+
+- Codex GUI: Settings > Hooks
+- Codex CLI: `/hooks`
+
+Codex GUIでは`/hooks`がスラッシュコマンド候補に表示されなくても設定不備ではありません。ユーザーが追加したcommand hookは手動のreview/trustが必要です。trustはhook定義に対して記録されるため、同じ定義を使うタスクごとの再trustは不要ですが、定義を変更した場合は再度trustしてください。installerはCodex内部のtrust stateを変更しません。
 
 削除時はhookと専用rulesファイルの両方を取り除き、他のhookと`default.rules`を保持します。
 
@@ -152,9 +157,27 @@ agent-sentinel rules
 agent-sentinel rules --kind deny --json
 agent-sentinel log --since 30d --json
 agent-sentinel log --path
+agent-sentinel audit --since 7d
+agent-sentinel replay --since 30d
 ```
 
-ログはUnixでは`~/.local/share/agent-sentinel/logs/`、Windowsでは`%LOCALAPPDATA%\agent-sentinel\logs\`へ保存します。`AGENT_SENTINEL_LOG_DIR`で変更できます。
+ログはUnixでは`~/.local/share/agent-sentinel/logs/`、Windowsでは`%LOCALAPPDATA%\agent-sentinel\logs\`へ保存します。`AGENT_SENTINEL_LOG_DIR`で変更できます。Unixではディレクトリを`0700`、ログファイルを`0600`に保ちます。
+
+schema v3のログは、後から判定を再現できるようにBashコマンド、対象パス、cwd、session ID、判定理由を可読な値で保存します。WriteとEditの本文、apply_patchのpatch本文、未知のtool input全体は保存しません。ログにはAIタスク内の情報が含まれるため、共有やバックアップ時も通常の作業データと同じように扱ってください。
+
+各evaluation eventには一意な`event_id`、raw command、正規化後のcommand、複合コマンドの各segment、正規化ステップ、照合ルール、Codex execution ruleのcoverage、agent-sentinel・rules・hook定義のhashを記録します。hook定義とCodex execution rulesは、パッケージが期待する内容と実際のインストール先から読み取った内容を別々にhash化し、`*_matches`でdriftを示します。入力のSHA-256も同一入力の照合用に残します。`host`は`claude`または`codex`、`owner`は`hook`、`execpolicy`、`native`のどの層が判定を担当したかを示します。
+
+`agent-sentinel audit`はDENYの見逃し、execution ruleでカバーされないASK、評価例外、インストール済みCodex policyのdrift、現在のpolicyとの判定差を検出します。`agent-sentinel replay`は保存した入力を現在の評価器で再評価しますが、コマンドやツールは実行せず、ClaudeのLLM judgeにも接続しません。過去にLLM judgeが担当したまま現在も静的ruleに一致しないイベントは比較不能として表示します。
+
+誤検知や見逃しは元イベントを書き換えず、annotation eventとして追記できます。
+
+```bash
+agent-sentinel log annotate EVENT_ID --label false-positive --note "reason"
+agent-sentinel log annotate EVENT_ID --label missed-deny
+agent-sentinel log annotate EVENT_ID --label expected-prompt
+```
+
+Codex hookが委譲した場合も`defer`として記録し、execution ruleのprompt対象は`CODEX_RULE_PROMPT`、それ以外は`CODEX_NATIVE`で区別します。PreToolUse eventの記録時点ではhook出力がhostに受理された結果をまだ観測していないため、DENYを含むすべての`observed_outcome`は`unknown`です。`expected_action`はhookが要求した動作、`defer`は実際の承認結果ではなく委譲先を表します。
 
 ## claude-sentinelからの移行
 

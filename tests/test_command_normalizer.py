@@ -119,6 +119,33 @@ class TestNormalizeForMatching:
     def test_strip_then_option_normalization(self):
         assert normalize_for_matching("do git -C /tmp status") == "git status"
 
+    def test_strips_absolute_executable_path(self):
+        assert normalize_for_matching("/usr/bin/pkill worker") == "pkill worker"
+        assert normalize_for_matching("/usr/bin/xargs pkill") == "xargs pkill"
+
+    def test_strips_absolute_path_after_runner(self):
+        assert normalize_for_matching("env /usr/bin/git -C /tmp status") == "git status"
+        assert normalize_for_matching("/usr/bin/env /usr/bin/pkill worker") == "pkill worker"
+        assert normalize_for_matching("/usr/bin/xargs /usr/bin/pkill") == "xargs pkill"
+
+    def test_does_not_trust_user_writable_executable_paths(self):
+        assert normalize_for_matching("/tmp/ls") == "/tmp/ls"
+        assert normalize_for_matching("/tmp/git status") == "/tmp/git status"
+        assert normalize_for_matching("/tmp/env ls") == "/tmp/env ls"
+        assert normalize_for_matching("/usr/bin/../../tmp/ls") == "/usr/bin/../../tmp/ls"
+
+    def test_strips_xargs_options_before_utility(self):
+        assert normalize_for_matching("xargs -0 pkill") == "xargs pkill"
+        assert normalize_for_matching("xargs -e pkill") == "xargs pkill"
+        assert normalize_for_matching("xargs -eEOF pkill") == "xargs pkill"
+        assert normalize_for_matching("/usr/bin/xargs -n 1 /usr/bin/pkill") == "xargs pkill"
+        assert normalize_for_matching("xargs -I{} /usr/bin/killall {}") == "xargs killall {}"
+        assert normalize_for_matching("xargs --max-args=1 rm") == "xargs rm"
+        assert normalize_for_matching("xargs --replace pkill {}") == "xargs pkill {}"
+
+    def test_does_not_normalize_user_writable_xargs_utility(self):
+        assert normalize_for_matching("xargs -0 /tmp/pkill") == "xargs /tmp/pkill"
+
     def test_condition_keywords_not_stripped(self):
         assert normalize_for_matching("until ! pgrep foo") == "until ! pgrep foo"
         assert normalize_for_matching("while true") == "while true"

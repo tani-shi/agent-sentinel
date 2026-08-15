@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
+import shlex
 from dataclasses import dataclass
-
-from agent_sentinel.command_normalizer import tokenize
 
 Token = str | tuple[str, ...]
 
@@ -484,8 +483,15 @@ def render_rules() -> str:
 
 
 def prompt_covers(source: str, command: str) -> bool:
-    tokens = tokenize(command)
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return False
     return any(rule.source == source and _matches(rule.pattern, tokens) for rule in PROMPT_RULES)
+
+
+def has_prompt_rule(source: str) -> bool:
+    return any(rule.source == source for rule in PROMPT_RULES)
 
 
 def _matches(pattern: tuple[Token, ...], tokens: list[str]) -> bool:
