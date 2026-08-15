@@ -84,9 +84,9 @@ agent-sentinelは`config.toml`を書き換えません。installerは安全機�
 このリポジトリは開発時に使う読み取り専用Codex CLIの許可を[`.codex/rules/codex-readonly.rules`](.codex/rules/codex-readonly.rules)で配布します。信頼済みプロジェクトとして開いた場合、review、ルール検証、診断、設定一覧などを承認なしで実行できます。設定変更、認証変更、plugin・MCPの追加や削除には一致しません。
 
 - `features.hooks = false`：hook DENYが動作しません。canonical keyがない場合は旧`features.codex_hooks = false`も警告対象です。
-- `approval_policy = "never"`：生成したprompt ruleに一致するコマンドは承認できず失敗します。同時にネイティブ承認とauto-reviewが使われないため、Codexへ委譲した操作のうちsandbox内で完結するものは意味的レビューなしで実行される可能性があります。
+- `approval_policy = "never"`：承認要求が無効になり、ネイティブ承認とauto-reviewも使われません。Codex GUIでは生成したprompt ruleに一致するコマンドが承認なしで実行される場合があるため、agent-sentinelはこの構成でASKの強制を保証しません。`on-request`を使用してください。
 
-`never`でもprompt ruleが自動許可されることはありません。Codex CLI 0.147.0では`approval required by policy, but AskForApproval is set to Never`としてfail-closedになることを確認しています。
+Codex CLI 0.147.0ではprompt ruleがfail-closedになりましたが、Codex GUI 26.803.81509では同じruleのコマンドが承認なしで実行されました。クライアント間で動作が異なるため、`never`をASKの安全境界として扱わないでください。実機結果は[issue #22](https://github.com/tani-shi/agent-sentinel/issues/22#issuecomment-5300085004)に記録しています。
 
 Codexのexecution rules、approvals、hooksの仕様はOpenAIの公式ドキュメントを参照してください。
 

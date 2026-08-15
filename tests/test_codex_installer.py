@@ -292,7 +292,9 @@ def test_warns_when_approval_policy_is_never(tmp_path):
 
     message = install(path)
 
+    assert "Codex GUI" in message
     assert "prompt rules" in message
+    assert "ASK enforcement is not guaranteed" in message
     assert "auto-review" in message
     assert "on-request" in message
 
