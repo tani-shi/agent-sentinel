@@ -76,6 +76,8 @@ approvals_reviewer = "auto_review"
 
 agent-sentinelは`config.toml`を書き換えません。installerは安全機能を無効化する設定を検出したときだけ警告します。
 
+このリポジトリは開発時に使う読み取り専用Codex CLIの許可を[`.codex/rules/codex-readonly.rules`](.codex/rules/codex-readonly.rules)で配布します。信頼済みプロジェクトとして開いた場合、review、ルール検証、診断、設定一覧などを承認なしで実行できます。設定変更、認証変更、plugin・MCPの追加や削除には一致しません。
+
 - `features.hooks = false`：hook DENYが動作しません。canonical keyがない場合は旧`features.codex_hooks = false`も警告対象です。
 - `approval_policy = "never"`：生成したprompt ruleに一致するコマンドは承認できず失敗します。同時にネイティブ承認とauto-reviewが使われないため、Codexへ委譲した操作のうちsandbox内で完結するものは意味的レビューなしで実行される可能性があります。
 
