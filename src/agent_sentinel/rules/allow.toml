@@ -520,7 +520,7 @@ command_regex = '''^\s*claude\s+(plugin\s+(list|marketplace)|plugins?\s+list|--v
 
 [[rules]]
 name = "agent-sentinel-read"
-command_regex = '''^\s*(agent-sentinel|claude-sentinel)\s+(log|test|--test|rules|version)(\s|$)'''
+command_regex = '''^\s*(agent-sentinel|claude-sentinel)\s+(audit|log|replay|test|--test|rules|version)(\s|$)'''
 
 [[rules]]
 name = "codex-cli-version"

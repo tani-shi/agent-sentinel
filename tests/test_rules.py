@@ -358,6 +358,11 @@ class TestAllowRules:
         assert match_allow("python3 script.py") is not None
         assert match_allow("uv run pytest") is not None
 
+    def test_agent_sentinel_log_analysis(self):
+        assert match_allow("agent-sentinel audit --since 7d") is not None
+        assert match_allow("agent-sentinel replay --event abc") is not None
+        assert match_allow("agent-sentinel log annotate abc --label missed-deny") is not None
+
     def test_node(self):
         assert match_allow("npm install") is not None
         assert match_allow("node app.js") is not None

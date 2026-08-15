@@ -9,6 +9,7 @@ log records) so the two stay in sync.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from typing import NamedTuple
@@ -268,12 +269,24 @@ _RUNNER_VALUE_FLAGS: dict[str, frozenset[str]] = {
     "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
 }
 _DURATION = re.compile(r"\d+(\.\d+)?[smhd]?")
+_TRUSTED_EXECUTABLE_DIRS = frozenset({"/bin", "/sbin", "/usr/bin", "/usr/sbin"})
+
+
+def _executable_name(token: str) -> str | None:
+    if not token.startswith("/"):
+        return token
+    resolved = os.path.realpath(token)
+    if os.path.dirname(resolved) not in _TRUSTED_EXECUTABLE_DIRS:
+        return None
+    return os.path.basename(resolved) or None
 
 
 def _skip_runner_args(tokens: list[str], i: int) -> int:
     """``tokens[i]`` is a runner name; return the index of the wrapped command
     after consuming that runner's own assignments/options."""
-    runner = tokens[i]
+    runner = _executable_name(tokens[i])
+    if runner not in _RUNNER_VALUE_FLAGS:
+        return i
     value_flags = _RUNNER_VALUE_FLAGS[runner]
     i += 1
     duration_seen = False
@@ -304,9 +317,10 @@ def _drop_leading_runners(tokens: list[str]) -> list[str]:
     i = 0
     while i < len(tokens):
         tok = tokens[i]
-        if tok in _WRAPPER_PREFIXES:
+        command_name = _executable_name(tok)
+        if command_name in _WRAPPER_PREFIXES:
             i += 1
-        elif tok in _RUNNER_VALUE_FLAGS:
+        elif command_name in _RUNNER_VALUE_FLAGS:
             i = _skip_runner_args(tokens, i)
         else:
             break
@@ -361,6 +375,140 @@ def _strip_command_runners(command: str) -> str:
     if not rest or len(rest) == len(tokens):
         return command
     return " ".join(rest)
+
+
+_XARGS_VALUE_OPTIONS = frozenset(
+    {
+        "-E",
+        "-I",
+        "-J",
+        "-L",
+        "-P",
+        "-R",
+        "-S",
+        "-a",
+        "-d",
+        "-n",
+        "-s",
+        "--arg-file",
+        "--delimiter",
+        "--max-args",
+        "--max-chars",
+        "--max-procs",
+        "--max-replacements",
+        "--process-slot-var",
+    }
+)
+_XARGS_OPTIONAL_VALUE_OPTIONS = frozenset(
+    {"-e", "--eof", "--logical-eof", "--max-lines", "--replace"}
+)
+_XARGS_FLAG_OPTIONS = frozenset(
+    {
+        "-0",
+        "-i",
+        "-l",
+        "-o",
+        "-p",
+        "-r",
+        "-t",
+        "-x",
+        "--exit",
+        "--interactive",
+        "--no-run-if-empty",
+        "--null",
+        "--open-tty",
+        "--show-limits",
+        "--verbose",
+    }
+)
+_XARGS_ATTACHED_VALUE_OPTIONS = (
+    "-E",
+    "-I",
+    "-J",
+    "-L",
+    "-P",
+    "-R",
+    "-S",
+    "-a",
+    "-d",
+    "-n",
+    "-s",
+)
+_XARGS_ATTACHED_OPTIONAL_VALUE_OPTIONS = ("-e", "-i", "-l")
+_XARGS_COMBINABLE_FLAGS = frozenset("0oprtx")
+
+
+def _xargs_command_index(tokens: list[str]) -> int | None:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1 if index + 1 < len(tokens) else None
+        if token in _XARGS_VALUE_OPTIONS:
+            index += 2
+            continue
+        if token in _XARGS_FLAG_OPTIONS:
+            index += 1
+            continue
+        if token in _XARGS_OPTIONAL_VALUE_OPTIONS:
+            index += 1
+            continue
+        if token.startswith("--") and "=" in token:
+            option = token.split("=", 1)[0]
+            if option in _XARGS_VALUE_OPTIONS or option in _XARGS_OPTIONAL_VALUE_OPTIONS:
+                index += 1
+                continue
+        has_attached_value = any(
+            token.startswith(option) and token != option
+            for option in _XARGS_ATTACHED_VALUE_OPTIONS
+        )
+        if has_attached_value:
+            index += 1
+            continue
+        if any(
+            token.startswith(option) and token != option
+            for option in _XARGS_ATTACHED_OPTIONAL_VALUE_OPTIONS
+        ):
+            index += 1
+            continue
+        if token.startswith("-") and token != "-" and set(token[1:]) <= _XARGS_COMBINABLE_FLAGS:
+            index += 1
+            continue
+        if token.startswith("-"):
+            return None
+        return index
+    return None
+
+
+def _strip_executable_paths(command: str) -> str:
+    """Normalize trusted executable paths and xargs utility options."""
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return command
+    if not tokens:
+        return command
+    executable = tokens[0]
+    path_changed = False
+    if executable.startswith("/"):
+        normalized = _executable_name(executable)
+        if normalized is None:
+            return command
+        tokens[0] = executable = normalized
+        path_changed = True
+    if executable != "xargs":
+        return " ".join(tokens) if path_changed else command
+
+    utility_index = _xargs_command_index(tokens)
+    if utility_index is None:
+        return command
+    utility = tokens[utility_index]
+    if utility.startswith("/"):
+        normalized = _executable_name(utility)
+        if normalized is not None:
+            utility = normalized
+    tokens = [tokens[0], utility, *tokens[utility_index + 1 :]]
+    return " ".join(tokens)
 
 
 def _strip_prefix_options(command: str) -> str:
@@ -427,6 +575,25 @@ def _strip_prefix_options(command: str) -> str:
     return " ".join(out)
 
 
+_NORMALIZATION_TRANSFORMS = (
+    ("wrapper", _strip_wrapper_prefixes),
+    ("runner", _strip_command_runners),
+    ("executable_path", _strip_executable_paths),
+    ("prefix_options", _strip_prefix_options),
+)
+
+
+def _normalize(command: str) -> tuple[str, list[dict[str, str]]]:
+    trace: list[dict[str, str]] = []
+    value = command
+    for kind, transform in _NORMALIZATION_TRANSFORMS:
+        normalized = transform(value)
+        if normalized != value:
+            trace.append({"kind": kind, "before": value, "after": normalized})
+        value = normalized
+    return value, trace
+
+
 def normalize_for_matching(command: str) -> str:
     """Normalize a command for rule matching.
 
@@ -436,7 +603,14 @@ def normalize_for_matching(command: str) -> str:
     -> ``git diff``). Each pass returns its input unchanged when nothing
     applies, so an already-plain command is returned as-is.
     """
-    return _strip_prefix_options(_strip_command_runners(_strip_wrapper_prefixes(command)))
+    normalized, _ = _normalize(command)
+    return normalized
+
+
+def normalization_trace(command: str) -> list[dict[str, str]]:
+    """Return each transformation applied before rule matching."""
+    _, trace = _normalize(command)
+    return trace
 
 
 def normalize_for_analysis(command: str) -> str | None:

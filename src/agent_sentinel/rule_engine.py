@@ -11,10 +11,7 @@ from importlib import resources
 from typing import Any, Literal, NamedTuple
 
 from agent_sentinel import deletion_scope, git_probe, paths
-from agent_sentinel.command_normalizer import (
-    normalize_for_matching,
-    tokenize,
-)
+from agent_sentinel.command_normalizer import normalization_trace, normalize_for_matching, tokenize
 
 
 @dataclass
@@ -876,6 +873,18 @@ class SegmentVerdict(NamedTuple):
     read_paths: tuple[str, ...] = ()
 
 
+class BashSegmentInspection(NamedTuple):
+    raw: str
+    normalized: str
+    normalization: tuple[dict[str, str], ...]
+    verdict: SegmentVerdict
+
+
+class BashInspection(NamedTuple):
+    parsed: bool
+    segments: tuple[BashSegmentInspection, ...]
+
+
 class AskMatch(NamedTuple):
     name: str
     segment: str
@@ -917,21 +926,59 @@ def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) ->
     return SegmentVerdict("unmatched")
 
 
-def effective_ask_matches(command: str, cwd: str) -> list[AskMatch]:
-    """Return ASK rules that remain after DENY and deletion-scope evaluation."""
+def _evaluate_unparseable_segment(command: str, cwd: str) -> SegmentVerdict:
+    deny = (
+        match_deny(command)
+        or match_inplace_write_sensitive(command)
+        or match_secret_operand(command, cwd)
+    )
+    if deny:
+        return SegmentVerdict("deny", deny.name, deny.reason)
+    ask = match_ask(command)
+    if ask:
+        return SegmentVerdict(_ask_or_deny(ask, cwd), ask.name, ask.reason)
+    return SegmentVerdict("llm")
+
+
+def inspect_bash_command(command: str, cwd: str | None = None) -> BashInspection:
+    """Inspect the exact segments and rule verdicts used for evaluation."""
+    if cwd is None:
+        cwd = os.getcwd()
     segments = extract_commands(command)
     if segments is None:
-        ask = match_ask(command)
-        return [AskMatch(ask.name, command)] if ask else []
+        segments = [command]
+        parsed = False
+    else:
+        parsed = True
 
-    matches: list[AskMatch] = []
+    inspections: list[BashSegmentInspection] = []
     assignments = deletion_scope.Assignments()
     for segment in segments:
         assignments.record(segment)
-        verdict = _evaluate_segment(segment, cwd, assignments)
-        if verdict.decision == "ask":
-            matches.append(AskMatch(verdict.name, segment))
-    return matches
+        verdict = (
+            _evaluate_segment(segment, cwd, assignments)
+            if parsed
+            else _evaluate_unparseable_segment(segment, cwd)
+        )
+        inspections.append(
+            BashSegmentInspection(
+                raw=segment,
+                normalized=normalize_for_matching(segment),
+                normalization=tuple(normalization_trace(segment)),
+                verdict=verdict,
+            )
+        )
+    return BashInspection(parsed, tuple(inspections))
+
+
+def effective_ask_matches(command: str, cwd: str) -> list[AskMatch]:
+    """Return ASK rules that remain after DENY and deletion-scope evaluation."""
+    inspection = inspect_bash_command(command, cwd)
+    return [
+        AskMatch(segment.verdict.name, segment.raw)
+        for segment in inspection.segments
+        if segment.verdict.decision == "ask"
+    ]
 
 
 Decision = Literal["deny", "ask", "allow", "llm", "llm_read"]
@@ -980,26 +1027,15 @@ def evaluate_bash_command(command: str, cwd: str | None = None) -> BashEvaluatio
     """
     if cwd is None:
         cwd = os.getcwd()
-    segments = extract_commands(command)
-    if segments is None:
-        # Defense-in-depth scan over the full string before LLM fallback.
-        # Both DENY and ASK rules are anchored at ``^\s*<head>`` so they
-        # only match when the unparseable command's head is the rule's
-        # expected program.
-        deny = (
-            match_deny(command)
-            or match_inplace_write_sensitive(command)
-            or match_secret_operand(command, cwd)
-        )
-        if deny:
-            return BashEvaluation("deny", _deny_reason(deny.name, deny.reason))
-        ask = match_ask(command)
-        if ask:
-            if _ask_or_deny(ask, cwd) == "deny":
-                return BashEvaluation("deny", _deny_reason(ask.name, ask.reason))
-            return BashEvaluation("ask", f"Matched ask rule: {ask.name}")
+    inspection = inspect_bash_command(command, cwd)
+    if not inspection.parsed:
+        verdict = inspection.segments[0].verdict
+        if verdict.decision == "deny":
+            return BashEvaluation("deny", _deny_reason(verdict.name, verdict.reason))
+        if verdict.decision == "ask":
+            return BashEvaluation("ask", f"Matched ask rule: {verdict.name}")
         return BashEvaluation("llm", "Unparseable bash; deferring to LLM judge")
-    if not segments:
+    if not inspection.segments:
         return BashEvaluation("allow", "Empty command")
 
     deny_hit: SegmentVerdict | None = None
@@ -1009,11 +1045,8 @@ def evaluate_bash_command(command: str, cwd: str | None = None) -> BashEvaluatio
     seen_dirs: set[str] = set()
     allow_names: list[str] = []
     seen_allow: set[str] = set()
-    assignments = deletion_scope.Assignments()
-
-    for segment in segments:
-        assignments.record(segment)
-        verdict = _evaluate_segment(segment, cwd, assignments)
+    for segment in inspection.segments:
+        verdict = segment.verdict
         if verdict.decision == "deny":
             if deny_hit is None:
                 deny_hit = verdict

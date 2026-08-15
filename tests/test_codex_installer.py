@@ -50,6 +50,7 @@ def test_install_is_idempotent(tmp_path):
     install(path)
     message = install(path)
     assert "already up to date" in message
+    assert "Trust the agent-sentinel hook" not in message
     assert len(json.loads(path.read_text())["hooks"]["PreToolUse"]) == 1
 
 

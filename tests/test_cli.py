@@ -1,5 +1,6 @@
 """Tests for CLI module."""
 
+import hashlib
 import json
 import os
 from unittest.mock import patch
@@ -7,6 +8,10 @@ from unittest.mock import patch
 import pytest
 
 from agent_sentinel.cli import main
+
+
+def _sha256(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 @pytest.fixture()
@@ -58,6 +63,12 @@ class TestHookMode:
             main(["--host", "codex"])
 
         assert capsys.readouterr().out == ""
+        rec = json.loads((log_dir / "eval.jsonl").read_text())
+        assert rec["decision"]["result"] == "defer"
+        assert rec["decision"]["stage"] == "CODEX_NATIVE"
+        assert rec["host"] == "codex"
+        assert rec["decision"]["owner"] == "native"
+        assert rec["request"]["command"] == "ls -la"
 
     def test_codex_prompt_rule_is_left_to_execpolicy(self, capsys, log_dir):
         hook_input = {
@@ -71,6 +82,10 @@ class TestHookMode:
             main(["--host", "codex"])
 
         assert capsys.readouterr().out == ""
+        rec = json.loads((log_dir / "eval.jsonl").read_text())
+        assert rec["decision"]["result"] == "defer"
+        assert rec["decision"]["stage"] == "CODEX_RULE_PROMPT"
+        assert rec["decision"]["owner"] == "execpolicy"
 
     def test_codex_high_risk_ask_is_blocked_with_guidance(self, capsys, log_dir):
         hook_input = {
@@ -94,6 +109,10 @@ class TestHookMode:
         output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
         assert output["permissionDecision"] == "deny"
         assert "Invalid hook input" in output["permissionDecisionReason"]
+        rec = json.loads((log_dir / "eval.jsonl").read_text())
+        assert rec["decision"]["result"] == "deny"
+        assert rec["decision"]["stage"] == "INPUT_DENY"
+        assert rec["decision"]["owner"] == "hook"
 
     def test_codex_evaluation_error_fails_closed(self, capsys, log_dir):
         with (
@@ -105,6 +124,33 @@ class TestHookMode:
         output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
         assert output["permissionDecision"] == "deny"
         assert "Policy evaluation failed" in output["permissionDecisionReason"]
+        rec = json.loads((log_dir / "eval.jsonl").read_text())
+        assert rec["decision"]["result"] == "deny"
+        assert rec["decision"]["stage"] == "EVALUATION_ERROR"
+        assert rec["decision"]["owner"] == "hook"
+
+    def test_codex_rule_evaluation_error_keeps_audit_event(self, capsys, log_dir):
+        hook_input = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "session_id": "test",
+            "cwd": "/tmp",
+        }
+        with (
+            patch("agent_sentinel.hook_io.read_input", return_value=hook_input),
+            patch(
+                "agent_sentinel.rule_engine.inspect_bash_command",
+                side_effect=RuntimeError("broken evaluator"),
+            ),
+        ):
+            main(["--host", "codex"])
+
+        output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+        assert output["permissionDecision"] == "deny"
+        rec = json.loads((log_dir / "eval.jsonl").read_text())
+        assert rec["decision"]["stage"] == "EVALUATION_ERROR"
+        assert rec["analysis"] == {"status": "unavailable", "error_type": "RuntimeError"}
 
     def test_codex_never_uses_claude_sdk(self, capsys, log_dir):
         hook_input = {
@@ -150,8 +196,11 @@ class TestHookMode:
         log_file = log_dir / "eval.jsonl"
         assert log_file.exists()
         rec = json.loads(log_file.read_text().strip())
-        assert rec["decision"] == "allow"
-        assert rec["input"] == "ls -la"
+        assert rec["decision"]["result"] == "allow"
+        assert rec["request"]["command"] == "ls -la"
+        assert rec["request"]["sha256"] == _sha256("ls -la")
+        assert rec["host"] == "claude"
+        assert rec["decision"]["owner"] == "hook"
 
 
 class TestTestMode:
@@ -177,7 +226,7 @@ class TestTestMode:
         log_file = log_dir / "eval.jsonl"
         assert log_file.exists()
         rec = json.loads(log_file.read_text().strip())
-        assert rec["decision"] == "allow"
+        assert rec["decision"]["result"] == "allow"
 
     def test_codex_unknown_command_defers_without_claude_sdk(self, capsys, log_dir):
         with patch("agent_sentinel.llm_judge.evaluate") as judge:
@@ -224,7 +273,8 @@ class TestSubcommands:
         custom = tmp_path / "hooks.json"
         main(["install", "--target", "codex", "--path", str(custom)])
         captured = capsys.readouterr()
-        assert "Open /hooks" in captured.out
+        assert "Settings > Hooks" in captured.out
+        assert "/hooks in Codex CLI" in captured.out
         config = json.loads(custom.read_text())
         command = config["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         assert command == "agent-sentinel --host codex"
@@ -244,8 +294,9 @@ class TestLogSubcommand:
 
         main(["log"])
         out = capsys.readouterr().out
-        assert "ls" in out
-        assert "pwd" in out
+        assert "Bash: ls" in out
+        assert "Bash: pwd" in out
+        assert "event=" in out
 
     def test_log_limit(self, capsys, log_dir):
         for i in range(5):
@@ -265,8 +316,9 @@ class TestLogSubcommand:
         main(["log", "--json"])
         out = capsys.readouterr().out
         rec = json.loads(out.strip())
-        assert rec["input"] == "ls"
-        assert rec["decision"] == "allow"
+        assert rec["request"]["sha256"] == _sha256("ls")
+        assert rec["request"]["command"] == "ls"
+        assert rec["decision"]["result"] == "allow"
 
     def test_log_decision_filter(self, capsys, log_dir):
         main(["--test", "ls"])
@@ -278,7 +330,7 @@ class TestLogSubcommand:
         lines = [line for line in out.strip().split("\n") if line]
         assert len(lines) == 1
         rec = json.loads(lines[0])
-        assert rec["decision"] == "deny"
+        assert rec["decision"]["result"] == "deny"
 
     def test_log_stage_filter(self, capsys, log_dir):
         main(["--test", "ls"])  # RULE_ALLOW
@@ -290,7 +342,16 @@ class TestLogSubcommand:
         lines = [line for line in out.strip().split("\n") if line]
         assert len(lines) == 1
         rec = json.loads(lines[0])
-        assert rec["stage"] == "RULE_DENY"
+        assert rec["decision"]["stage"] == "RULE_DENY"
+
+    def test_log_accepts_codex_stage_filter(self, capsys, log_dir):
+        main(["--host", "codex", "--test", "ssh production"])
+        capsys.readouterr()
+
+        main(["log", "--stage", "CODEX_RULE_PROMPT", "--json"])
+        rec = json.loads(capsys.readouterr().out)
+        assert rec["decision"]["result"] == "defer"
+        assert rec["decision"]["owner"] == "execpolicy"
 
     def test_log_tail(self, capsys, log_dir):
         main(["--test", "ls"])
@@ -302,8 +363,8 @@ class TestLogSubcommand:
         lines = [line for line in out.strip().split("\n") if line]
         recs = [json.loads(line) for line in lines]
         # Tail = oldest first; ls was logged before pwd
-        assert recs[0]["input"] == "ls"
-        assert recs[1]["input"] == "pwd"
+        assert recs[0]["request"]["command"] == "ls"
+        assert recs[1]["request"]["command"] == "pwd"
 
     def test_log_path(self, capsys, log_dir):
         main(["log", "--path"])
@@ -317,7 +378,7 @@ class TestLogSubcommand:
         # Since 1 hour ago should include recent records
         main(["log", "--since", "1h", "--json"])
         out = capsys.readouterr().out
-        assert "ls" in out
+        assert _sha256("ls") in out
 
     def test_log_since_far_future(self, capsys, log_dir):
         main(["--test", "ls"])
@@ -329,6 +390,40 @@ class TestLogSubcommand:
         # 0s means time.time() - 0 = now, so records just written should be before "now"
         # Actually records just written will have ts very close to now, may or may not match
         # This just tests that --since doesn't crash
+
+    def test_log_annotation_and_audit(self, capsys, log_dir):
+        main(["--test", "ls"])
+        capsys.readouterr()
+        event = json.loads((log_dir / "eval.jsonl").read_text())
+
+        main(
+            [
+                "log",
+                "annotate",
+                event["event_id"],
+                "--label",
+                "false-positive",
+                "--note",
+                "review this rule",
+            ]
+        )
+        assert "Annotation" in capsys.readouterr().out
+
+        main(["audit", "--json"])
+        findings = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        assert any(finding["code"] == "USER_REPORTED_FALSE_POSITIVE" for finding in findings)
+
+    def test_replay_one_event(self, capsys, log_dir):
+        main(["--host", "codex", "--test", "ssh production"])
+        capsys.readouterr()
+        event = json.loads((log_dir / "eval.jsonl").read_text())
+
+        main(["replay", "--event", event["event_id"], "--json"])
+        replay = json.loads(capsys.readouterr().out)
+
+        assert replay["replayable"] is True
+        assert replay["changed"] is False
+        assert replay["current"]["owner"] == "execpolicy"
 
 
 class TestRulesSubcommand:

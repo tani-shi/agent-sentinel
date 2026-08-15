@@ -1,18 +1,20 @@
-"""Evaluation log writer and reader."""
+"""Evaluation event writer and reader."""
 
 from __future__ import annotations
 
 import json
 import os
 import sys
+import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agent_sentinel.log_event import LOG_SCHEMA_VERSION, build_evaluation_event
+
 
 def _default_log_dir() -> Path:
-    """Return platform-appropriate default log directory."""
     if sys.platform == "win32":
         local = os.environ.get("LOCALAPPDATA")
         if local:
@@ -31,12 +33,11 @@ def _legacy_log_dir() -> Path:
 DEFAULT_LOG_DIR = _default_log_dir()
 LEGACY_LOG_DIR = _legacy_log_dir()
 LOG_FILENAME = "eval.jsonl"
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_FILE_SIZE = 10 * 1024 * 1024
 MAX_FILES = 5
 
 
 def get_log_dir() -> Path:
-    """Return the configured agent-sentinel log directory."""
     env = os.environ.get("AGENT_SENTINEL_LOG_DIR") or os.environ.get("CLAUDE_SENTINEL_LOG_DIR")
     if env:
         return Path(env)
@@ -49,63 +50,112 @@ def log_evaluation(
     reason: str,
     stage: str,
     elapsed_ms: float,
-) -> None:
-    """Append one evaluation record to the log file.
-
-    Silently ignores all errors so logging never affects hook decisions.
-    """
+    *,
+    host: str = "claude",
+    owner: str = "hook",
+) -> str | None:
+    """Append one replayable evaluation event without affecting hook decisions."""
     try:
-        log_dir = get_log_dir()
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / LOG_FILENAME
-
-        tool_name = hook_input.get("tool_name", "")
-        tool_input = hook_input.get("tool_input", {})
-        if tool_name == "Bash":
-            input_value = tool_input.get("command", "")
-        elif tool_name in ("Read", "Write", "Edit"):
-            input_value = tool_input.get("file_path", "")
-        else:
-            input_value = json.dumps(tool_input, ensure_ascii=False)
-
-        record = {
-            "ts": datetime.now(UTC).isoformat(),
-            "session_id": hook_input.get("session_id", ""),
-            "tool_name": tool_name,
-            "input": input_value,
-            "cwd": hook_input.get("cwd", ""),
-            "decision": decision,
-            "stage": stage,
-            "reason": reason,
-            "elapsed_ms": round(elapsed_ms, 1),
-        }
-
-        _rotate_if_needed(log_path)
-
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        event = build_evaluation_event(
+            hook_input,
+            decision,
+            reason,
+            stage,
+            elapsed_ms,
+            host=host,
+            owner=owner,
+        )
+        _append_event(event)
+        return event["event_id"]
     except Exception:
-        pass
+        return None
+
+
+def append_annotation(target_event_id: str, label: str, note: str = "") -> str:
+    if find_event(target_event_id) is None:
+        raise ValueError(f"Evaluation event not found: {target_event_id}")
+    event_id = uuid.uuid4().hex
+    _append_event(
+        {
+            "schema_version": LOG_SCHEMA_VERSION,
+            "event_type": "annotation",
+            "event_id": event_id,
+            "ts": datetime.now(UTC).isoformat(),
+            "target_event_id": target_event_id,
+            "label": label,
+            "note": note,
+        }
+    )
+    return event_id
+
+
+def prepare_log_dir() -> Path:
+    log_dir = get_log_dir()
+    log_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if hasattr(os, "chmod"):
+        os.chmod(log_dir, 0o700)
+    for index in range(MAX_FILES + 1):
+        suffix = "" if index == 0 else f".{index}"
+        path = log_dir / f"{LOG_FILENAME}{suffix}"
+        if path.is_file() and not path.is_symlink():
+            os.chmod(path, 0o600)
+    return log_dir
+
+
+def _append_event(event: dict[str, Any]) -> None:
+    log_path = prepare_log_dir() / LOG_FILENAME
+    _rotate_if_needed(log_path)
+    flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(log_path, flags, 0o600)
+    if hasattr(os, "fchmod"):
+        os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as stream:
+        stream.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
 def _rotate_if_needed(log_path: Path) -> None:
-    """Rotate log files if the current file exceeds MAX_FILE_SIZE."""
-    if not log_path.exists():
+    if not log_path.exists() or log_path.stat().st_size <= MAX_FILE_SIZE:
         return
-    if log_path.stat().st_size <= MAX_FILE_SIZE:
-        return
-
-    # Shift existing rotated files: .4 -> delete, .3 -> .4, .2 -> .3, .1 -> .2
-    for i in range(MAX_FILES, 1, -1):
-        src = log_path.parent / f"{LOG_FILENAME}.{i - 1}"
-        dst = log_path.parent / f"{LOG_FILENAME}.{i}"
-        if src.exists():
-            if i == MAX_FILES:
-                dst.unlink(missing_ok=True)
-            src.rename(dst)
-
-    # Current -> .1
+    for index in range(MAX_FILES, 1, -1):
+        source = log_path.parent / f"{LOG_FILENAME}.{index - 1}"
+        destination = log_path.parent / f"{LOG_FILENAME}.{index}"
+        if source.exists():
+            if index == MAX_FILES:
+                destination.unlink(missing_ok=True)
+            source.rename(destination)
     log_path.rename(log_path.parent / f"{LOG_FILENAME}.1")
+
+
+def iter_events(
+    log_dir: Path | None = None,
+    *,
+    newest_first: bool = True,
+) -> Iterator[dict[str, Any]]:
+    if log_dir is None:
+        log_dir = get_log_dir()
+        if log_dir == DEFAULT_LOG_DIR and not log_dir.exists() and LEGACY_LOG_DIR.exists():
+            log_dir = LEGACY_LOG_DIR
+    files = []
+    for index in range(MAX_FILES + 1):
+        suffix = "" if index == 0 else f".{index}"
+        path = log_dir / f"{LOG_FILENAME}{suffix}"
+        if path.exists():
+            files.append(path)
+    records = []
+    for path in files:
+        try:
+            with path.open(encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            continue
+    records.sort(key=lambda record: record.get("ts", ""), reverse=newest_first)
+    yield from records
 
 
 def iter_logs(
@@ -117,81 +167,55 @@ def iter_logs(
     limit: int = 0,
     newest_first: bool = True,
 ) -> Iterator[dict[str, Any]]:
-    """Iterate over log records with optional filters.
-
-    Args:
-        log_dir: Directory containing log files. Defaults to get_log_dir().
-        since: Unix timestamp; only yield records newer than this.
-        decision: Filter by decision (e.g. "allow", "deny").
-        stage: Filter by stage (e.g. "RULE_DENY", "RULE_ALLOW", "LLM_JUDGE").
-        limit: Maximum number of records to yield. 0 means unlimited.
-        newest_first: If True, yield newest records first.
-    """
-    if log_dir is None:
-        log_dir = get_log_dir()
-        if log_dir == DEFAULT_LOG_DIR and not log_dir.exists() and LEGACY_LOG_DIR.exists():
-            log_dir = LEGACY_LOG_DIR
-
-    # Collect all log files in order: eval.jsonl (newest), .1, .2, ...
-    files: list[Path] = []
-    main_log = log_dir / LOG_FILENAME
-    if main_log.exists():
-        files.append(main_log)
-    for i in range(1, MAX_FILES + 1):
-        rotated = log_dir / f"{LOG_FILENAME}.{i}"
-        if rotated.exists():
-            files.append(rotated)
-
-    if not files:
-        return
-
-    # Read all matching records
-    records: list[dict[str, Any]] = []
-    for fp in files:
-        try:
-            with open(fp, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not _matches(rec, since=since, decision=decision, stage=stage):
-                        continue
-                    records.append(rec)
-        except OSError:
-            continue
-
-    # Sort by timestamp
-    records.sort(key=lambda r: r.get("ts", ""), reverse=newest_first)
-
     count = 0
-    for rec in records:
-        yield rec
+    for record in iter_events(log_dir, newest_first=newest_first):
+        if record.get("event_type", "evaluation") != "evaluation":
+            continue
+        if not _matches(record, since=since, decision=decision, stage=stage):
+            continue
+        yield record
         count += 1
         if limit and count >= limit:
             return
 
 
+def find_event(event_id: str, log_dir: Path | None = None) -> dict[str, Any] | None:
+    for event in iter_logs(log_dir):
+        if event.get("event_id") == event_id:
+            return event
+    return None
+
+
+def decision_value(record: dict[str, Any]) -> str:
+    decision = record.get("decision", "")
+    if isinstance(decision, dict):
+        return str(decision.get("result", ""))
+    return str(decision)
+
+
+def stage_value(record: dict[str, Any]) -> str:
+    decision = record.get("decision", {})
+    if isinstance(decision, dict):
+        return str(decision.get("stage", ""))
+    return str(record.get("stage", ""))
+
+
 def _matches(
-    rec: dict[str, Any],
+    record: dict[str, Any],
     *,
     since: float | None,
     decision: str | None,
     stage: str | None,
 ) -> bool:
-    if decision and rec.get("decision") != decision:
+    if decision and decision_value(record) != decision:
         return False
-    if stage and rec.get("stage") != stage:
+    if stage and stage_value(record) != stage:
         return False
     if since is not None:
-        ts_str = rec.get("ts", "")
         try:
-            rec_ts = datetime.fromisoformat(ts_str).timestamp()
+            record_ts = datetime.fromisoformat(record.get("ts", "")).timestamp()
         except (ValueError, TypeError):
             return False
-        if rec_ts < since:
+        if record_ts < since:
             return False
     return True

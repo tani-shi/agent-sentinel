@@ -93,7 +93,7 @@ def evaluate_codex(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
                     codex_policy.HOOK_DENY_ASK_REASONS[ask.name],
                     "CODEX_RULE_DENY",
                 )
-            if ask.name in codex_policy.HYBRID_ASK_RULES and not codex_policy.prompt_covers(
+            if codex_policy.has_prompt_rule(ask.name) and not codex_policy.prompt_covers(
                 ask.name, ask.segment
             ):
                 return (
@@ -111,6 +111,21 @@ def evaluate_codex(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
     else:
         return None
     return result if result[0] == "deny" else None
+
+
+def codex_defer_target(hook_input: dict[str, Any]) -> tuple[str, str, str]:
+    """Describe the Codex policy layer that owns a hook defer."""
+    if hook_input.get("tool_name") == "Bash":
+        command = hook_input.get("tool_input", {}).get("command", "")
+        cwd = hook_input.get("cwd", ".")
+        for ask in rules.effective_ask_matches(command, cwd):
+            if codex_policy.prompt_covers(ask.name, ask.segment):
+                return (
+                    "execpolicy",
+                    "CODEX_RULE_PROMPT",
+                    "No hook denial; Codex execution rules apply",
+                )
+    return "native", "CODEX_NATIVE", "No hook denial; Codex native policy applies"
 
 
 def _evaluate_bash(

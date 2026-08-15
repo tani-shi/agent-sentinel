@@ -1,14 +1,22 @@
 """Tests for logger module."""
 
+import hashlib
 import json
 import os
+import stat
 import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from agent_sentinel import logger
+from agent_sentinel import codex_installer, logger
+from agent_sentinel.codex_policy import render_rules
+from agent_sentinel.policy_snapshot import policy_details
+
+
+def _sha256(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 @pytest.fixture()
@@ -41,14 +49,26 @@ class TestLogEvaluation:
         assert log_file.exists()
 
         rec = json.loads(log_file.read_text().strip())
-        assert rec["tool_name"] == "Bash"
-        assert rec["input"] == "git status"
-        assert rec["decision"] == "allow"
-        assert rec["stage"] == "RULE_ALLOW"
-        assert rec["reason"] == "Allowed by rule: git_read_only"
+        assert rec["schema_version"] == 3
+        assert rec["event_type"] == "evaluation"
+        assert rec["event_id"]
+        assert rec["request"]["tool"] == "Bash"
+        assert rec["request"]["command"] == "git status"
+        assert rec["request"]["sha256"] == _sha256("git status")
+        assert rec["decision"]["result"] == "allow"
+        assert rec["decision"]["stage"] == "RULE_ALLOW"
+        assert rec["decision"]["reason"] == "Allowed by rule: git_read_only"
+        assert rec["decision"]["observed_outcome"] == "unknown"
         assert rec["elapsed_ms"] == 2.1
         assert rec["session_id"] == "sess1"
         assert rec["cwd"] == "/tmp"
+        assert rec["host"] == "claude"
+        assert rec["decision"]["owner"] == "hook"
+        assert rec["analysis"]["segments"][0]["matched_rules"] == [
+            {"id": "git-status", "effect": "allow"}
+        ]
+        assert rec["policy"]["rules_hash"]
+        assert rec["policy"]["evaluator_hash"]
         assert "ts" in rec
 
     def test_read_tool_logs_file_path(self, log_dir):
@@ -59,8 +79,93 @@ class TestLogEvaluation:
 
         log_file = log_dir / "eval.jsonl"
         rec = json.loads(log_file.read_text().strip())
-        assert rec["input"] == "/home/.env"
-        assert rec["tool_name"] == "Read"
+        assert rec["request"]["sha256"] == _sha256("/home/.env")
+        assert rec["request"]["file_path"] == "/home/.env"
+        assert rec["request"]["tool"] == "Read"
+
+    def test_persists_task_inputs_for_audit(self, log_dir):
+        hook_input = _make_hook_input(
+            "curl -H 'Authorization: Bearer secret-token' /private/customer/path",
+            session_id="secret-session",
+            cwd="/private/customer/project",
+        )
+        logger.log_evaluation(
+            hook_input,
+            "deny",
+            "Blocked token secret-token in /private/customer/path",
+            "RULE_DENY",
+            0.5,
+            host="codex",
+            owner="hook",
+        )
+
+        rec = json.loads((log_dir / logger.LOG_FILENAME).read_text())
+        assert "secret-token" in rec["request"]["command"]
+        assert rec["session_id"] == "secret-session"
+        assert rec["cwd"] == "/private/customer/project"
+        assert "secret-token" in rec["decision"]["reason"]
+        assert rec["decision"]["expected_action"] == "block"
+        assert rec["decision"]["observed_outcome"] == "unknown"
+
+    def test_excludes_write_content(self, log_dir):
+        hook_input = _make_hook_input("/tmp/output.txt", tool_name="Write")
+        hook_input["tool_input"]["content"] = "body that must not be retained"
+
+        logger.log_evaluation(hook_input, "allow", "ok", "RULE_ALLOW", 0.5)
+
+        serialized = (log_dir / logger.LOG_FILENAME).read_text()
+        rec = json.loads(serialized)
+        assert rec["request"]["file_path"] == "/tmp/output.txt"
+        assert "body that must not be retained" not in serialized
+
+    def test_records_normalization_and_execpolicy_coverage(self, log_dir):
+        logger.log_evaluation(
+            _make_hook_input("command git commit -m message"),
+            "deny",
+            "not representable",
+            "CODEX_RULE_DENY",
+            0.5,
+            host="codex",
+        )
+
+        rec = json.loads((log_dir / logger.LOG_FILENAME).read_text())
+        segment = rec["analysis"]["segments"][0]
+        assert segment["normalized"] == "git commit -m message"
+        assert segment["normalization"][0]["kind"] == "wrapper"
+        assert segment["matched_rules"] == [{"id": "git-commit", "effect": "ask"}]
+        assert segment["has_execpolicy_rule"] is True
+        assert segment["execpolicy_covered"] is False
+        assert rec["decision"]["reason_code"] == "ASK_NOT_COVERED_BY_EXECPOLICY"
+
+    def test_policy_fingerprint_compares_installed_codex_files(self, monkeypatch, tmp_path):
+        hooks_path = tmp_path / "hooks.json"
+        rules_path = tmp_path / "rules" / "agent-sentinel.rules"
+        rules_path.parent.mkdir()
+        hooks_path.write_text(json.dumps({"hooks": {"PreToolUse": [codex_installer.HOOK_ENTRY]}}))
+        rules_path.write_text(render_rules())
+        monkeypatch.setattr(codex_installer, "HOOKS_PATH", hooks_path)
+        monkeypatch.setattr(codex_installer, "RULES_PATH", rules_path)
+
+        current = policy_details("codex")
+
+        assert current["hook_definition_matches"] is True
+        assert current["execpolicy_matches"] is True
+        assert current["hook_definition_hash"] == current["installed_hook_definition_hash"]
+        assert current["execpolicy_hash"] == current["installed_execpolicy_hash"]
+
+        rules_path.write_text("stale rules")
+        stale = policy_details("codex")
+
+        assert stale["execpolicy_matches"] is False
+        assert stale["execpolicy_hash"] != stale["installed_execpolicy_hash"]
+        assert stale["policy_hash"] != current["policy_hash"]
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+    def test_log_storage_is_private(self, log_dir):
+        logger.log_evaluation(_make_hook_input(), "allow", "ok", "RULE_ALLOW", 1.0)
+
+        assert stat.S_IMODE(log_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE((log_dir / logger.LOG_FILENAME).stat().st_mode) == 0o600
 
     def test_multiple_records_appended(self, log_dir):
         for i in range(5):
@@ -70,9 +175,29 @@ class TestLogEvaluation:
         lines = log_file.read_text().strip().split("\n")
         assert len(lines) == 5
 
+    def test_annotation_is_append_only_and_not_an_evaluation(self, log_dir):
+        event_id = logger.log_evaluation(
+            _make_hook_input("git commit -m message"),
+            "ask",
+            "review",
+            "RULE_ASK",
+            1.0,
+        )
+        assert event_id is not None
+
+        annotation_id = logger.append_annotation(event_id, "expected-prompt", "correct")
+
+        events = list(logger.iter_events(log_dir))
+        assert len(events) == 2
+        annotation = next(event for event in events if event["event_type"] == "annotation")
+        assert annotation["event_id"] == annotation_id
+        assert annotation["target_event_id"] == event_id
+        assert annotation["note"] == "correct"
+        assert len(list(logger.iter_logs(log_dir))) == 1
+
     def test_silent_on_write_failure(self, log_dir):
         """Logging failure should not raise."""
-        with patch("builtins.open", side_effect=PermissionError("denied")):
+        with patch("os.open", side_effect=PermissionError("denied")):
             # Should not raise
             logger.log_evaluation(_make_hook_input(), "allow", "ok", "RULE_ALLOW", 1.0)
 
@@ -170,7 +295,7 @@ class TestIterLogs:
 
         results = list(logger.iter_logs(log_dir, decision="deny"))
         assert len(results) == 1
-        assert results[0]["input"] == "sudo rm"
+        assert results[0]["request"]["command"] == "sudo rm"
 
     def test_filter_by_stage(self, log_dir):
         logger.log_evaluation(_make_hook_input("sudo"), "deny", "blocked", "RULE_DENY", 0.5)
@@ -178,7 +303,7 @@ class TestIterLogs:
 
         results = list(logger.iter_logs(log_dir, stage="RULE_DENY"))
         assert len(results) == 1
-        assert results[0]["input"] == "sudo"
+        assert results[0]["request"]["command"] == "sudo"
 
     def test_filter_by_since(self, log_dir):
         now = time.time()
