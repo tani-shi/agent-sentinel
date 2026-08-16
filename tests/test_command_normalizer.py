@@ -22,7 +22,6 @@ class TestNormalizeForMatching:
         assert normalize_for_matching("git -C /tmp -c x=y log") == "git log"
 
     def test_git_c_with_destructive_subcommand(self):
-        # ASK 側のフォールスルーを塞ぐためのケース
         assert normalize_for_matching("git -c safecrlf=false reset --hard") == "git reset --hard"
 
     def test_git_long_option_eq_form(self):
@@ -63,15 +62,12 @@ class TestNormalizeForMatching:
         assert normalize_for_matching("make -s test") == "make test"
 
     def test_unknown_option_stops_stripping(self):
-        # --unknown-flag は whitelist にない → 剥がし停止 → 元文字列
         assert normalize_for_matching("git --unknown-flag status") == "git --unknown-flag status"
 
     def test_non_whitelisted_program_unchanged(self):
-        # ls は whitelist にないので触らない
         assert normalize_for_matching("ls -la") == "ls -la"
 
     def test_subcommand_options_not_touched(self):
-        # subcommand 後のオプションは触らない
         assert normalize_for_matching("git push --force") == "git push --force"
         assert normalize_for_matching("npm run test --silent") == "npm run test --silent"
 
@@ -82,17 +78,14 @@ class TestNormalizeForMatching:
         assert normalize_for_matching("   ") == "   "
 
     def test_no_prefix_options(self):
-        # idempotent: 既に正規化済みのコマンドは触らない
         assert normalize_for_matching("git diff") == "git diff"
         assert normalize_for_matching("docker ps") == "docker ps"
 
     def test_only_options_no_subcommand(self):
-        # subcommand が無く options だけのケースは元文字列を返す
         assert normalize_for_matching("git --no-pager") == "git --no-pager"
         assert normalize_for_matching("git -C /tmp") == "git -C /tmp"
 
     def test_value_option_missing_value(self):
-        # "git -c" のように値が欠落している場合は元文字列を返す（安全側）
         assert normalize_for_matching("git -c") == "git -c"
 
     def test_unparseable_bash(self):
@@ -175,7 +168,6 @@ class TestNormalizeForAnalysis:
         assert normalize_for_analysis("ls -la") == "ls"
 
     def test_multi_token_unknown_command(self):
-        # whitelist にないが multi-token command なので "head subcommand" を返す
         assert normalize_for_analysis("flargle subcommand") == "flargle"
 
     def test_git_subcommand(self):
@@ -188,7 +180,6 @@ class TestNormalizeForAnalysis:
         assert normalize_for_analysis("npm --silent install") == "npm install"
 
     def test_flag_after_head_falls_back_to_head(self):
-        # whitelist にない flag は剥がさない → 第二トークンが flag → head のみ
         assert normalize_for_analysis("git --unknown-flag") == "git"
 
     def test_empty(self):
@@ -196,7 +187,6 @@ class TestNormalizeForAnalysis:
         assert normalize_for_analysis("   ") is None
 
     def test_unparseable_quote_falls_back(self):
-        # shlex で失敗 → fallback split → "echo" が返る
         assert normalize_for_analysis("echo 'unterminated") == "echo"
 
 
