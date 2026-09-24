@@ -100,11 +100,7 @@ def _sentinel_entries(entries: object) -> list[dict[str, Any]]:
         sentinel_hooks = [
             hook
             for hook in hooks
-            if isinstance(hook, dict)
-            and any(
-                name in str(hook.get("command", ""))
-                for name in ("agent-sentinel", "claude-sentinel")
-            )
+            if isinstance(hook, dict) and "agent-sentinel" in str(hook.get("command", ""))
         ]
         if sentinel_hooks:
             installed.append({**entry, "hooks": sentinel_hooks})

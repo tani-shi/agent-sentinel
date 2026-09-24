@@ -278,35 +278,8 @@ PROMPT_RULES = (
         "claude plugins list",
     ),
     _prompt(
-        "xai-config-write",
-        ("xai", "config", ("init", "set")),
-        "xai config set key value",
-        "xai config get key",
-    ),
-    _prompt("fam-init", ("fam", "init"), "fam init", "fam status"),
-    _prompt("fam-fetch-update", ("fam", ("fetch", "update")), "fam fetch", "fam list"),
-    _prompt("fam-import", ("fam", "import"), "fam import data", "fam export data"),
-    _prompt(
-        "fam-config-set",
-        ("fam", "config", "set"),
-        "fam config set key value",
-        "fam config get key",
-    ),
-    _prompt(
-        "fam-schedule-mutate",
-        ("fam", "schedule", ("enable", "disable")),
-        "fam schedule enable job",
-        "fam schedule list",
-    ),
-    _prompt(
-        "fam-service-mutate",
-        ("fam", "service", ("add", "remove")),
-        "fam service add app",
-        "fam service list",
-    ),
-    _prompt(
         "agent-sentinel-mutate",
-        (("agent-sentinel", "claude-sentinel"), ("install", "uninstall")),
+        ("agent-sentinel", ("install", "uninstall")),
         "agent-sentinel install",
         "agent-sentinel --test ls",
     ),
@@ -371,12 +344,6 @@ PROMPT_RULES = (
     ),
     _prompt("git-checkout", ("git", "checkout"), "git checkout branch", "git switch branch"),
     _prompt("git-clean", ("git", "clean"), "git clean -fd", "git status"),
-    _prompt(
-        "flashspace-mutate",
-        ("flashspace", ("delete", "add", "set", "create", "update", "remove")),
-        "flashspace delete item",
-        "flashspace list",
-    ),
 )
 
 
@@ -419,7 +386,6 @@ HYBRID_ASK_RULES = {
     "git-reset-hard",
     "git-checkout",
     "git-clean",
-    "flashspace-mutate",
 }
 
 NATIVE_ASK_RULES = {

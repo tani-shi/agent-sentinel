@@ -23,7 +23,7 @@ def _sha256(value: str) -> str:
 def log_dir(tmp_path):
     """Use a temporary directory for logs."""
     d = tmp_path / "logs"
-    with patch.dict(os.environ, {"CLAUDE_SENTINEL_LOG_DIR": str(d)}):
+    with patch.dict(os.environ, {"AGENT_SENTINEL_LOG_DIR": str(d)}):
         yield d
 
 
@@ -209,29 +209,6 @@ class TestLogEvaluation:
             # Should not raise
             logger.log_evaluation(_make_hook_input(), "allow", "ok", "RULE_ALLOW", 1.0)
 
-    def test_new_environment_variable_takes_precedence(self, monkeypatch, tmp_path):
-        new_dir = tmp_path / "new"
-        legacy_dir = tmp_path / "legacy"
-        monkeypatch.setenv("AGENT_SENTINEL_LOG_DIR", str(new_dir))
-        monkeypatch.setenv("CLAUDE_SENTINEL_LOG_DIR", str(legacy_dir))
-        assert logger.get_log_dir() == new_dir
-
-    def test_reads_legacy_default_when_new_default_is_empty(self, monkeypatch, tmp_path):
-        new_dir = tmp_path / "new"
-        legacy_dir = tmp_path / "legacy"
-        legacy_dir.mkdir()
-        (legacy_dir / logger.LOG_FILENAME).write_text(
-            json.dumps({"ts": "2026-01-01T00:00:00+00:00", "decision": "allow"}) + "\n"
-        )
-        monkeypatch.delenv("AGENT_SENTINEL_LOG_DIR", raising=False)
-        monkeypatch.delenv("CLAUDE_SENTINEL_LOG_DIR", raising=False)
-        monkeypatch.setattr(logger, "DEFAULT_LOG_DIR", new_dir)
-        monkeypatch.setattr(logger, "LEGACY_LOG_DIR", legacy_dir)
-
-        assert list(logger.iter_logs()) == [
-            {"ts": "2026-01-01T00:00:00+00:00", "decision": "allow"}
-        ]
-
 
 class TestRotation:
     def test_rotates_when_exceeds_max_size(self, log_dir):
@@ -369,12 +346,10 @@ class TestIterLogs:
 class TestGetLogDir:
     def test_default(self):
         with patch.dict(os.environ, {}, clear=True):
-            # Remove CLAUDE_SENTINEL_LOG_DIR if set
-            os.environ.pop("CLAUDE_SENTINEL_LOG_DIR", None)
             d = logger.get_log_dir()
             assert d == logger.DEFAULT_LOG_DIR
 
     def test_env_override(self):
-        with patch.dict(os.environ, {"CLAUDE_SENTINEL_LOG_DIR": "/custom/logs"}):
+        with patch.dict(os.environ, {"AGENT_SENTINEL_LOG_DIR": "/custom/logs"}):
             d = logger.get_log_dir()
             assert d == Path("/custom/logs")

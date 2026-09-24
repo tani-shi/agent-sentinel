@@ -14,7 +14,6 @@ claude = ["claude-agent-sdk>=0.1.0"]
 
 [project.scripts]
 agent-sentinel = "agent_sentinel.cli:main"
-claude-sentinel = "agent_sentinel.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_sentinel"]

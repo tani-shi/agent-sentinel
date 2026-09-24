@@ -67,7 +67,7 @@ def test_install_uses_exact_task_tool_matchers(tmp_path):
     assert hooks["PermissionRequest"][0]["matcher"] == codex_tasks.SEND_MESSAGE_TOOL
 
 
-def test_install_migrates_legacy_command(tmp_path):
+def test_install_replaces_stale_matcher(tmp_path):
     path = tmp_path / "hooks.json"
     path.write_text(
         json.dumps(
@@ -76,7 +76,9 @@ def test_install_migrates_legacy_command(tmp_path):
                     "PreToolUse": [
                         {
                             "matcher": "Bash",
-                            "hooks": [{"type": "command", "command": "claude-sentinel"}],
+                            "hooks": [
+                                {"type": "command", "command": "agent-sentinel --host codex"}
+                            ],
                         }
                     ]
                 }
@@ -101,7 +103,7 @@ def test_install_preserves_handler_and_matcher_from_shared_group(tmp_path):
                             "matcher": "Bash",
                             "statusMessage": "User group",
                             "hooks": [
-                                {"type": "command", "command": "claude-sentinel"},
+                                {"type": "command", "command": "agent-sentinel --host codex"},
                                 {"type": "command", "command": "other-hook"},
                             ],
                         }
@@ -140,7 +142,9 @@ def test_install_consolidates_duplicate_sentinel_groups(tmp_path):
                     "PreToolUse": [
                         {
                             "matcher": "Bash",
-                            "hooks": [{"type": "command", "command": "claude-sentinel"}],
+                            "hooks": [
+                                {"type": "command", "command": "agent-sentinel --host codex"}
+                            ],
                         },
                         {
                             "matcher": "apply_patch",

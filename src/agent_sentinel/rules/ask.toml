@@ -260,38 +260,6 @@ command_regex = '''^\s*brew\s+(install|uninstall|upgrade|reinstall|link|unlink|t
 name = "claude-plugins-mutate"
 command_regex = '''^\s*claude\s+plugins?\s+(update|install|uninstall|remove|add)(\s|$)'''
 
-# --- xai CLI Mutations ---
-
-[[rules]]
-name = "xai-config-write"
-command_regex = '''^\s*xai\s+config\s+(init|set)(\s|$)'''
-
-# --- fam CLI Mutations ---
-
-[[rules]]
-name = "fam-init"
-command_regex = '''^\s*fam\s+init(\s|$)'''
-
-[[rules]]
-name = "fam-fetch-update"
-command_regex = '''^\s*fam\s+(fetch|update)(\s|$)'''
-
-[[rules]]
-name = "fam-import"
-command_regex = '''^\s*fam\s+import(\s|$)'''
-
-[[rules]]
-name = "fam-config-set"
-command_regex = '''^\s*fam\s+config\s+set(\s|$)'''
-
-[[rules]]
-name = "fam-schedule-mutate"
-command_regex = '''^\s*fam\s+schedule\s+(enable|disable)(\s|$)'''
-
-[[rules]]
-name = "fam-service-mutate"
-command_regex = '''^\s*fam\s+service\s+(add|remove)(\s|$)'''
-
 # --- macOS App Manager (duti) ---
 
 [[rules]]
@@ -302,7 +270,7 @@ command_regex = '''^\s*duti\s+(-s\s|[^-])'''
 
 [[rules]]
 name = "agent-sentinel-mutate"
-command_regex = '''^\s*(agent-sentinel|claude-sentinel)\s+(install|uninstall)(\s|$)'''
+command_regex = '''^\s*agent-sentinel\s+(install|uninstall)(\s|$)'''
 
 # --- Destructive File / Git / Process Operations ---
 
@@ -353,10 +321,6 @@ command_regex = '''^\s*kill(\s|$)'''
 [[rules]]
 name = "launchctl-mutate"
 command_regex = '''^\s*launchctl\s+(load|unload|bootstrap|bootout|kickstart|kill|enable|disable|start|stop|remove|submit)(\s|$)'''
-
-[[rules]]
-name = "flashspace-mutate"
-command_regex = '''^\s*flashspace\s+(delete|add|set|create|update|remove)[\w-]*(\s|$)'''
 
 [[rules]]
 name = "xargs-destructive"

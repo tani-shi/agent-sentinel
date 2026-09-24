@@ -117,7 +117,7 @@ tests) directly.
    name = "gh-pr-comment-read"
    command_regex = '''^\s*gh\s+pr\s+comment\s+(view|list)(\s|$)'''
 
-   # --- Google Workspace CLI (gog) ---     # ← next section unchanged
+   # --- Google Cloud ---                   # ← next section unchanged
    ```
 
 9. **Add targeted tests for the new rules** by editing

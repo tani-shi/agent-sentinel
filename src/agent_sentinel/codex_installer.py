@@ -53,7 +53,7 @@ HOOK_ENTRIES = {
 
 def _is_sentinel_hook(hook: dict) -> bool:
     command = hook.get("command", "")
-    return "agent-sentinel" in command or "claude-sentinel" in command
+    return "agent-sentinel" in command
 
 
 def install(
