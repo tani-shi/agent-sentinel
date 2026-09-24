@@ -74,15 +74,15 @@ def _get_managed_permissions() -> dict[str, list[str]]:
 
 
 def _is_sentinel_hook(hook: dict) -> bool:
-    """Whether a hook entry runs claude-sentinel, directly or through a wrapper.
+    """Whether a hook entry runs agent-sentinel, directly or through a wrapper.
 
     Matching the command string exactly would miss a wrapper script such as
-    `zsh ~/.claude/scripts/claude-sentinel-wrapper.zsh`, leaving install to add
+    `zsh ~/.claude/scripts/agent-sentinel-wrapper.zsh`, leaving install to add
     a second hook that evaluates every tool call again and uninstall unable to
     remove either.
     """
     command = hook.get("command", "")
-    return "agent-sentinel" in command or "claude-sentinel" in command
+    return "agent-sentinel" in command
 
 
 def install(settings_path: Path | None = None) -> str:
@@ -119,11 +119,6 @@ def install(settings_path: Path | None = None) -> str:
     sentinel_hooks = [
         hook for entry in existing for hook in entry.get("hooks", []) if _is_sentinel_hook(hook)
     ]
-    hook_migrated = False
-    for hook in sentinel_hooks:
-        if hook.get("command") == "claude-sentinel":
-            hook["command"] = "agent-sentinel --host claude"
-            hook_migrated = True
     hooks_installed = not sentinel_hooks
     if hooks_installed:
         existing.extend(HOOK_ENTRIES)
@@ -133,7 +128,6 @@ def install(settings_path: Path | None = None) -> str:
 
     any_changes = (
         hooks_installed
-        or hook_migrated
         or legacy_removed
         or legacy_perm_removed
         or any(v > 0 for v in perm_added.values())

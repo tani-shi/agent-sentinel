@@ -190,24 +190,6 @@ agent-sentinel log annotate EVENT_ID --label expected-prompt
 
 When the Codex hook delegates a decision, it records `defer`, distinguishing execution-rule prompt targets as `CODEX_RULE_PROMPT` and other decisions as `CODEX_NATIVE`. At the time a PreToolUse event is recorded, the hook has not yet observed whether the host accepted its output, so every `observed_outcome`, including DENY, is `unknown`. `expected_action` describes the hook's requested behavior, while `defer` identifies the destination rather than the eventual approval result.
 
-## Migrating from claude-sentinel
-
-Replace the existing uv tool, then update the hook:
-
-```bash
-uv tool uninstall claude-sentinel
-uv tool install '.[claude]'
-agent-sentinel install --target claude
-```
-
-The legacy `claude-sentinel` CLI remains available as a compatibility alias during migration. The installer replaces legacy hook commands with the new command, and uninstall removes both forms.
-
-- Distribution name: `agent-sentinel`
-- CLI: `agent-sentinel`; the legacy name is a compatibility alias
-- Python import: `agent_sentinel`
-- Log environment variable: `AGENT_SENTINEL_LOG_DIR`; `CLAUDE_SENTINEL_LOG_DIR` is a legacy fallback
-- Log directory: `agent-sentinel/logs`; legacy logs remain readable
-
 ## Development
 
 ```bash

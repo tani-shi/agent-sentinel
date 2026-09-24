@@ -590,27 +590,11 @@ class TestAllowRules:
         assert match_allow("gh browse --no-browser 31714a4") is not None
         assert match_allow("gh browse") is not None
 
-    def test_gog_read(self):
-        assert match_allow("gog version") is not None
-        assert match_allow("gog people") is not None
-        assert match_allow("gog groups") is not None
-
-    def test_gog_subcommand_read(self):
-        assert match_allow('gog gmail search "query"') is not None
-        assert match_allow("gog calendar events") is not None
-        assert match_allow("gog drive ls") is not None
-        assert match_allow("gog docs export") is not None
-
     def test_jq(self):
         assert match_allow("jq .") is not None
         assert match_allow("jq '.foo'") is not None
         assert match_allow("jq -r '.name' file.json") is not None
         assert match_allow("jq") is not None
-
-    def test_gog_deep_read(self):
-        assert match_allow("gog auth alias list") is not None
-        assert match_allow("gog chat spaces find") is not None
-        assert match_allow("gog gmail drafts get") is not None
 
     def test_firebase_read(self):
         assert match_allow("firebase emulators:start") is not None
@@ -788,10 +772,6 @@ class TestAllowRules:
         assert match_allow("shuf -i 1-5 -n 3") is not None
         assert match_allow("seq 1 10") is not None
         assert match_allow("rev file.txt") is not None
-
-    def test_fam_db_read(self):
-        assert match_allow('fam db read "SELECT 1"') is not None
-        assert match_allow("fam db tables") is not None
 
     def test_xmllint(self):
         assert match_allow("xmllint --format config.xml") is not None

@@ -18,7 +18,7 @@ def _sha256(value: str) -> str:
 def log_dir(tmp_path):
     """Use a temporary directory for logs."""
     d = tmp_path / "logs"
-    with patch.dict(os.environ, {"CLAUDE_SENTINEL_LOG_DIR": str(d)}):
+    with patch.dict(os.environ, {"AGENT_SENTINEL_LOG_DIR": str(d)}):
         yield d
 
 

@@ -10,7 +10,7 @@ from agent_sentinel.installer import (
     uninstall,
 )
 
-WRAPPER_COMMAND = "zsh ~/.claude/scripts/claude-sentinel-wrapper.zsh"
+WRAPPER_COMMAND = "zsh ~/.claude/scripts/agent-sentinel-wrapper.zsh"
 
 
 def _settings_with_wrapper_hook():
@@ -48,7 +48,7 @@ class TestInstall:
         assert len(entries) == 1
         assert entries[0]["hooks"][0]["command"] == "agent-sentinel --host claude"
 
-    def test_install_migrates_legacy_permissionrequest_hook(self, settings_file):
+    def test_install_removes_old_permissionrequest_hook(self, settings_file):
         settings_file.write_text(
             json.dumps(
                 {
@@ -56,7 +56,7 @@ class TestInstall:
                         "PermissionRequest": [
                             {
                                 "matcher": "*",
-                                "hooks": [{"type": "command", "command": "claude-sentinel"}],
+                                "hooks": [{"type": "command", "command": "agent-sentinel"}],
                             }
                         ]
                     }
@@ -68,30 +68,6 @@ class TestInstall:
         settings = json.loads(settings_file.read_text())
         assert "PermissionRequest" not in settings["hooks"]
         assert len(settings["hooks"]["PreToolUse"]) == 1
-        assert (
-            settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-            == "agent-sentinel --host claude"
-        )
-
-    def test_install_migrates_legacy_command(self, settings_file):
-        settings_file.write_text(
-            json.dumps(
-                {
-                    "hooks": {
-                        "PreToolUse": [
-                            {
-                                "matcher": "*",
-                                "hooks": [{"type": "command", "command": "claude-sentinel"}],
-                            }
-                        ]
-                    }
-                }
-            )
-        )
-
-        install(settings_file)
-
-        settings = json.loads(settings_file.read_text())
         assert (
             settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
             == "agent-sentinel --host claude"
@@ -308,7 +284,7 @@ class TestUninstall:
         msg = uninstall(settings_file)
         assert "not found" in msg
 
-    @pytest.mark.parametrize("sentinel_command", ["claude-sentinel", WRAPPER_COMMAND])
+    @pytest.mark.parametrize("sentinel_command", ["agent-sentinel", WRAPPER_COMMAND])
     def test_uninstall_preserves_other_hooks(self, settings_file, sentinel_command):
         settings = {
             "hooks": {
@@ -355,7 +331,7 @@ class TestUninstall:
         assert entry["hooks"] == [{"type": "command", "command": "other-hook"}]
 
     def test_uninstall_removes_every_event(self, settings_file):
-        sentinel = {"matcher": "*", "hooks": [{"type": "command", "command": "claude-sentinel"}]}
+        sentinel = {"matcher": "*", "hooks": [{"type": "command", "command": "agent-sentinel"}]}
         settings_file.write_text(
             json.dumps({"hooks": {"PreToolUse": [sentinel], "PermissionRequest": [sentinel]}})
         )

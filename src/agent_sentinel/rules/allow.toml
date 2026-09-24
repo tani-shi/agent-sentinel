@@ -340,20 +340,6 @@ command_regex = '''^\s*gh\s+pr\s+checks(\s|$)'''
 name = "gh-browse"
 command_regex = '''^\s*gh\s+browse(\s|$)'''
 
-# --- Google Workspace CLI (gog) ---
-
-[[rules]]
-name = "gog-read"
-command_regex = '''^\s*gog\s+(version|people|groups)(\s|$)'''
-
-[[rules]]
-name = "gog-subcommand-read"
-command_regex = '''^\s*gog\s+\S+\s+(get|list|list-\w+|search|status|find|export|info|cat|ls|url|download|metadata|notes|content|responses|attachment|history|permissions|keys|path|drives|directory|other|acl|calendars|colors|conflicts|events?|freebusy|team|time|users|services|roster|profile)(\s|$)'''
-
-[[rules]]
-name = "gog-deep-read"
-command_regex = '''^\s*gog\s+\S+\s+\S+\s+(get|list|search|status|find|space|opens|url|profile|roster)(\s|$)'''
-
 # --- Google Cloud ---
 
 [[rules]]
@@ -516,7 +502,7 @@ command_regex = '''^\s*claude\s+(plugin\s+(list|marketplace)|plugins?\s+list|--v
 
 [[rules]]
 name = "agent-sentinel-read"
-command_regex = '''^\s*(agent-sentinel|claude-sentinel)\s+(audit|log|replay|test|--test|rules|version)(\s|$)'''
+command_regex = '''^\s*agent-sentinel\s+(audit|log|replay|test|--test|rules|version)(\s|$)'''
 
 [[rules]]
 name = "codex-cli-version"
@@ -525,36 +511,12 @@ command_regex = '''^\s*codex\s+(-V|--version)(\s|$)'''
 # --- Other CLIs ---
 
 [[rules]]
-name = "xai-read"
-command_regex = '''^\s*xai\s+(search|user|thread|trending|web|models)(\s|$)'''
-
-[[rules]]
-name = "xai-config-read"
-command_regex = '''^\s*xai\s+config\s+(get|list)(\s|$)'''
-
-[[rules]]
 name = "sheldon"
 command_regex = '''^\s*sheldon\s+(source|list|version|completions|init)(\s|$)'''
 
 [[rules]]
 name = "duti-read"
 command_regex = '''^\s*duti\s+(-x|-d|-l|--version)(\s|$)'''
-
-[[rules]]
-name = "fam-read"
-command_regex = '''^\s*fam\s+(show|export)(\s|$)'''
-
-[[rules]]
-name = "fam-subcommand-read"
-command_regex = '''^\s*fam\s+\S+\s+(show|status|list|test)(\s|$)'''
-
-[[rules]]
-name = "fam-db-read"
-command_regex = '''^\s*fam\s+db\s+(read|tables)(\s|$)'''
-
-[[rules]]
-name = "flashspace-read"
-command_regex = '''^flashspace (get|list)-'''
 
 # --- Notion CLI (ntn) ---
 
