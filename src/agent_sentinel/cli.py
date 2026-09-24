@@ -203,7 +203,6 @@ def _run_rules(args: argparse.Namespace) -> None:
                                 "type": "Bash",
                                 "name": rule.name,
                                 "pattern": rule.pattern.pattern,
-                                "deny_if": rule.deny_if,
                             }
                         )
                     )
@@ -240,9 +239,6 @@ def _run_rules(args: argparse.Namespace) -> None:
                 print(f"  {tool}")
 
 
-_DENY_IF_LABELS = {"git-alias-discard": "escalates to deny where `git discard` exists"}
-
-
 def _print_rule_section(kind: str, rule_type: str, rules: list) -> None:
     """Print a section of rules in human-readable format."""
     if not rules:
@@ -252,8 +248,6 @@ def _print_rule_section(kind: str, rule_type: str, rules: list) -> None:
     max_name = max(len(r.name) for r in rules)
     for rule in rules:
         print(f"  {rule.name:<{max_name}}  {rule.pattern.pattern}")
-        if rule.deny_if:
-            print(f"  {'':<{max_name}}  [{_DENY_IF_LABELS.get(rule.deny_if, rule.deny_if)}]")
 
 
 def _evaluate_hook_input(

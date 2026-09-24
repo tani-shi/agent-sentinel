@@ -116,9 +116,8 @@ _TRACKED_PATH = Verdict(
 _UNTRACKED_PATH = Verdict(
     "deny",
     "rm-untracked-path",
-    "Deletes untracked files, which no commit can restore. Use `git discard "
-    "--untracked <path>`: it snapshots to refs/discard/* first, so `git discard "
-    "--undo` brings the files back — not rm -rf.",
+    "Deletes untracked files, which no commit can restore. Use `trash <path>` "
+    "to move them to the Trash for recovery — not rm -rf.",
 )
 
 
@@ -237,7 +236,7 @@ def _classify_project_target(resolved: str, cwd: str) -> Verdict | None:
         return None
     if ignored:
         return _IGNORED_PATH
-    return _UNTRACKED_PATH if git_probe.has_discard_alias(cwd) else None
+    return _UNTRACKED_PATH
 
 
 def _expands_at_root_level(resolved: str, root: str) -> bool:

@@ -445,13 +445,13 @@ NATIVE_ASK_RULES = {
 HOOK_DENY_ASK_REASONS = {
     "rm-recursive": (
         "Recursive deletion requires review that a Codex hook cannot request. "
-        "Run it yourself, or use `git discard --untracked <path>` for untracked files so "
-        "`git discard --undo` can recover them."
+        "Run it yourself after reviewing the target, or use `trash <path>` "
+        "for untracked files so they can be recovered."
     ),
     "git-restore-worktree": (
-        "Restoring the worktree can destroy uncommitted work. Use `git discard "
-        "[<pathspec>...]`, which snapshots the current state for `git discard --undo`, "
-        "or run the restore yourself after reviewing it."
+        "Restoring the worktree can destroy uncommitted work. Save changes with "
+        "`git stash push --include-untracked`, or run the restore yourself "
+        "after reviewing it."
     ),
     "git-switch-force": (
         "Forced branch switching can destroy uncommitted work. Run it yourself after "

@@ -100,7 +100,7 @@ class TestHookMode:
 
         output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
         assert output["permissionDecision"] == "deny"
-        assert "git discard --untracked" in output["permissionDecisionReason"]
+        assert "trash <path>" in output["permissionDecisionReason"]
 
     def test_codex_invalid_input_fails_closed(self, capsys, log_dir):
         with patch("agent_sentinel.hook_io.read_input", side_effect=ValueError("bad json")):

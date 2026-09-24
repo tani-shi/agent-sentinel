@@ -169,13 +169,9 @@ class TestProjectScope:
     """Inside the working directory, git decides what is recoverable."""
 
     @pytest.fixture
-    def repo(self, tmp_path, monkeypatch, no_temp_roots):
+    def repo(self, tmp_path, no_temp_roots):
         if shutil.which("git") is None:
             pytest.skip("git not available")
-        # The developer running the tests may well have `git discard` configured
-        # globally, which decides the untracked verdict.
-        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "absent-gitconfig"))
-        monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(tmp_path / "absent-gitconfig"))
         run = lambda *args: subprocess.run(  # noqa: E731
             ["git", "-C", str(tmp_path), *args], check=True, capture_output=True
         )
@@ -213,15 +209,7 @@ class TestProjectScope:
     def test_missing_path_allowed(self, repo):
         assert classify("rm -rf dist", str(repo), {}) == deletion_scope._MISSING_PATH
 
-    def test_untracked_path_asks_without_discard(self, repo):
-        assert classify("rm -rf draft", str(repo), {}) is None
-
-    def test_untracked_path_denied_with_discard(self, repo):
-        subprocess.run(
-            ["git", "-C", str(repo), "config", "alias.discard", "!true"],
-            check=True,
-            capture_output=True,
-        )
+    def test_untracked_path_denied(self, repo):
         assert classify("rm -rf draft", str(repo), {}) == deletion_scope._UNTRACKED_PATH
 
     def test_glob_target_asks(self, repo):
@@ -238,7 +226,7 @@ class TestProjectScope:
         (tmp_path / "data").mkdir()
         assert classify("rm -rf data", str(tmp_path), {}) is None
 
-    @pytest.mark.parametrize("command", ["git rm -r src", "git discard --untracked draft"])
+    @pytest.mark.parametrize("command", ["git rm -r src", "trash draft"])
     def test_guided_alternative_never_asks(self, command, repo):
         # The tracked and untracked deny reasons send the user to these; an ask
         # rule added over either would strand that guidance.

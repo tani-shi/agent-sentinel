@@ -20,7 +20,6 @@ class Rule:
     pattern: re.Pattern[str]
     path_globs: tuple[str, ...] = ()
     reason: str | None = None
-    deny_if: str | None = None
 
 
 @dataclass
@@ -54,7 +53,6 @@ def _parse_rules(data: dict[str, Any], *, kind: str) -> RuleSet:
                 name=entry["name"],
                 pattern=re.compile(_expand_fragments(entry["command_regex"], fragments), flags),
                 reason=entry.get("reason"),
-                deny_if=entry.get("deny_if"),
             )
         )
     for entry in data.get("sensitive_path_rules", []):
@@ -851,18 +849,6 @@ def _out_of_project_scripts(args: list[str], cwd: str) -> list[str]:
     return outside
 
 
-def _ask_or_deny(rule: Rule, cwd: str) -> Literal["ask", "deny"]:
-    """Verdict for a matched ASK rule.
-
-    A rule carrying ``deny_if`` escalates to DENY only where the replacement its
-    ``reason`` names exists, so a blocked command is never left without an
-    alternative.
-    """
-    if rule.deny_if == "git-alias-discard" and git_probe.has_discard_alias(cwd):
-        return "deny"
-    return "ask"
-
-
 class SegmentVerdict(NamedTuple):
     """One segment's outcome. ``name`` is the rule (or scope verdict) behind it,
     empty where no rule spoke; ``reason`` carries deny guidance."""
@@ -916,7 +902,7 @@ def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) ->
         return SegmentVerdict(scope.decision, scope.name, scope.reason)
     ask = match_ask(segment)
     if ask:
-        return SegmentVerdict(_ask_or_deny(ask, cwd), ask.name, ask.reason)
+        return SegmentVerdict("ask", ask.name, ask.reason)
     kind, read_paths = _interpreter_escalation(segment, cwd)
     if kind is not None:
         return SegmentVerdict(kind, read_paths=tuple(read_paths))
@@ -936,7 +922,7 @@ def _evaluate_unparseable_segment(command: str, cwd: str) -> SegmentVerdict:
         return SegmentVerdict("deny", deny.name, deny.reason)
     ask = match_ask(command)
     if ask:
-        return SegmentVerdict(_ask_or_deny(ask, cwd), ask.name, ask.reason)
+        return SegmentVerdict("ask", ask.name, ask.reason)
     return SegmentVerdict("llm")
 
 
@@ -1001,9 +987,8 @@ def _deny_reason(name: str, guidance: str | None) -> str:
     """Deny reason surfaced to Claude, with the rule's guidance appended.
 
     A rule's optional guidance redirects Claude to the native alternative
-    (subagent completion notification, run_in_background, KillShell/TaskStop, the
-    recoverable equivalent an escalated ask rule names) so a reason-less block
-    does not push it toward a bypass.
+    (subagent completion notification, run_in_background, KillShell/TaskStop)
+    so a reason-less block does not push it toward a bypass.
     """
     base = f"Blocked by deny rule: {name}"
     return f"{base}. {guidance}" if guidance else base
