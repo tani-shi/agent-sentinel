@@ -203,7 +203,7 @@ class TestCodexEvaluation:
         )
         assert result is not None
         assert result[0] == "deny"
-        assert "git discard --untracked" in result[1]
+        assert "trash <path>" in result[1]
 
     def test_hybrid_direct_form_is_left_to_execpolicy(self):
         result = evaluate_codex(

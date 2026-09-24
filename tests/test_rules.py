@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent_sentinel import deletion_scope, git_probe
+from agent_sentinel import deletion_scope
 from agent_sentinel.rule_engine import (
     _expand_fragments,
     evaluate_bash_command,
@@ -335,23 +335,15 @@ class TestAllowRules:
         assert match_allow("git revert HEAD --no-edit") is not None
         assert match_allow("git revert abc123") is not None
 
-    def test_git_recoverable_deletion(self):
-        # Both verbs a deny reason redirects the user to must allow. A typo that
-        # drops either from the alternation must fail this test.
+    def test_git_rm(self):
         for cmd in (
             "git rm -r src",
             "git rm --cached f",
             "git -C /p rm -r x",
-            "git discard",
-            "git discard src/",
-            "git discard --untracked draft",
-            "git discard --undo",
-            "git -C /tmp/repo discard --hard",
         ):
             assert match_allow(cmd) is not None, cmd
 
-    def test_git_recoverable_deletion_no_false_positive(self):
-        assert match_allow("git discarded") is None
+    def test_git_rm_no_false_positive(self):
         assert match_allow("git rmx f") is None
 
     def test_python(self):
@@ -2416,52 +2408,25 @@ class TestInterpreterEscalation:
         assert evaluate_bash_command("node scripts/x.js", self.CWD).read_dirs == ()
 
 
-class TestDenyIfEscalation:
-    """`deny_if` rules block only where the replacement they name exists."""
+class TestDestructiveGitAsks:
+    """Destructive Git commands require review without a configured alias."""
 
     CWD = "/proj"
 
-    @pytest.fixture
-    def with_discard(self, monkeypatch):
-        monkeypatch.setattr(git_probe, "has_discard_alias", lambda cwd: True)
-
-    @pytest.fixture
-    def without_discard(self, monkeypatch):
-        monkeypatch.setattr(git_probe, "has_discard_alias", lambda cwd: False)
-
-    ESCALATING = ["git checkout main", "git checkout -- .", "git restore .", "git restore -SW f"]
-
-    def test_deny_if_rules_name_their_replacement(self):
-        for cmd in ("git checkout main", "git restore ."):
-            reason = match_ask(cmd).reason
-            assert reason is not None
-            assert "git discard" in reason
-
-    @pytest.mark.parametrize("cmd", ESCALATING)
-    def test_denied_where_discard_exists(self, cmd, with_discard):
-        decision, reason = evaluate_command(cmd, self.CWD)
-        assert decision == "deny", cmd
-        assert "git discard" in reason
-
-    @pytest.mark.parametrize("cmd", ESCALATING)
-    def test_asked_where_discard_is_missing(self, cmd, without_discard):
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "git checkout main",
+            "git checkout -- .",
+            "git restore .",
+            "git restore -SW f",
+            "git switch -f main",
+            "git reset --hard",
+            "git clean -fd",
+        ],
+    )
+    def test_destructive_commands_ask(self, cmd):
         assert evaluate_command(cmd, self.CWD)[0] == "ask", cmd
 
-    @pytest.mark.parametrize("cmd", ["git switch -f main", "git reset --hard", "git clean -fd"])
-    def test_rules_without_deny_if_never_escalate(self, cmd, with_discard):
-        assert evaluate_command(cmd, self.CWD)[0] == "ask", cmd
-
-    def test_unparseable_command_escalates(self, with_discard):
-        # The full-string scan that backs up an unparseable command must
-        # escalate too, or a stray quote downgrades the verdict.
-        assert evaluate_command('git checkout main; echo "unclosed', self.CWD)[0] == "deny"
-
-    def test_unparseable_command_asks_without_discard(self, without_discard):
+    def test_unparseable_command_asks(self):
         assert evaluate_command('git checkout main; echo "unclosed', self.CWD)[0] == "ask"
-
-    def test_alias_lookup_is_skipped_for_rules_without_deny_if(self, monkeypatch):
-        def fail(cwd):
-            raise AssertionError("alias lookup ran for a rule without deny_if")
-
-        monkeypatch.setattr(git_probe, "has_discard_alias", fail)
-        assert evaluate_command("git clean -fd", self.CWD)[0] == "ask"

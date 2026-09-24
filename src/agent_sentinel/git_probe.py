@@ -1,9 +1,4 @@
-"""Read-only git questions about a working directory and the paths inside it.
-
-The deletion scope asks what git already knows about an ``rm`` target; the
-``deny_if`` escalation asks whether ``git discard`` exists. Neither owns the
-answers, so they live here.
-"""
+"""Read-only git questions about a working directory and the paths inside it."""
 
 from __future__ import annotations
 
@@ -19,13 +14,6 @@ _GIT_TIMEOUT = 1.0
 
 def in_repository(cwd: str) -> bool:
     return _answers(cwd, "rev-parse", "--show-toplevel")
-
-
-def has_discard_alias(cwd: str) -> bool:
-    """True where ``git discard`` exists — the recoverable way to remove files
-    git knows about, and the replacement the escalated ask rules name. Absent, a
-    command that would be blocked stays a question for the user instead."""
-    return _answers(cwd, "config", "--get", "alias.discard")
 
 
 def tracks(cwd: str, path: str) -> bool | None:
@@ -51,10 +39,10 @@ def ignores(cwd: str, path: str) -> bool | None:
 @cache
 def _answers(cwd: str, *args: str) -> bool:
     """Whether a git query exits 0 and prints something, remembered per working
-    directory. An empty answer is no answer: ``config --get`` exits 0 for a key
-    set to the empty string, and ``rev-parse --show-toplevel`` prints nothing
-    outside a working tree. A probe whose emptiness means the opposite — a ``-q``
-    form such as ``check-ignore`` — must not be routed through here."""
+    directory. An empty answer is no answer: ``rev-parse --show-toplevel``
+    prints nothing outside a working tree. A probe whose emptiness means the
+    opposite — a ``-q`` form such as ``check-ignore`` — must not be routed
+    through here."""
     result = _git(cwd, *args)
     return result is not None and result.returncode == 0 and bool(result.stdout.strip())
 

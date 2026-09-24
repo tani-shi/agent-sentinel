@@ -141,7 +141,7 @@ Both Bash and file tools reject `.env`, `.ssh/`, `.aws/`, `.kube/config`, privat
 
 For Codex `apply_patch` calls, agent-sentinel extracts every Add, Update, Delete, and Move target and rejects the entire patch if any target matches a sensitive path. It also rejects patches whose target paths cannot be extracted.
 
-Recursive deletion is allowed for paths that do not exist yet or are ignored by Git. It is rejected for tracked paths and for untracked paths that can be recovered with `git discard`. When variables or globs cannot be resolved, or the target is outside the workspace, Claude Code returns ASK and the Codex hook returns DENY.
+Recursive deletion is allowed for paths that do not exist yet or are ignored by Git. It is rejected for tracked paths, with `git rm -r` as the guided alternative, and for untracked paths, with `trash` as the guided alternative. When variables or globs cannot be resolved, or the target is outside the workspace, Claude Code returns ASK and the Codex hook returns DENY.
 
 ## LLM judge
 
