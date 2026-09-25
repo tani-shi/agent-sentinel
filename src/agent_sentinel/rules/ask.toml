@@ -1,4 +1,4 @@
-# Commands that prompt user confirmation without LLM evaluation.
+# Commands classified as ASK without LLM evaluation.
 
 # Shared regex fragments, substituted into `@name@` tokens by the rule
 # engine before compilation (TOML has no string interpolation).

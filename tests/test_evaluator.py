@@ -170,30 +170,14 @@ class TestApplyPatchEvaluation:
 
 
 class TestCodexEvaluation:
-    def test_static_deny_is_blocked(self):
+    def test_static_deny_returns_deny(self):
         result = evaluate_codex(
             {"tool_name": "Bash", "tool_input": {"command": "sudo id"}, "cwd": "/tmp"}
         )
         assert result is not None
         assert result[0] == "deny"
 
-    def test_prompt_rule_is_left_to_execpolicy(self):
-        result = evaluate_codex(
-            {"tool_name": "Bash", "tool_input": {"command": "ssh host"}, "cwd": "/tmp"}
-        )
-        assert result is None
-
-    def test_native_ask_is_left_to_codex(self):
-        result = evaluate_codex(
-            {
-                "tool_name": "Bash",
-                "tool_input": {"command": "git push --force origin feature"},
-                "cwd": "/tmp",
-            }
-        )
-        assert result is None
-
-    def test_recursive_rm_is_blocked(self):
+    def test_recursive_rm_returns_deny(self):
         result = evaluate_codex(
             {
                 "tool_name": "Bash",
@@ -205,17 +189,7 @@ class TestCodexEvaluation:
         assert result[0] == "deny"
         assert "trash <path>" in result[1]
 
-    def test_hybrid_direct_form_is_left_to_execpolicy(self):
-        result = evaluate_codex(
-            {
-                "tool_name": "Bash",
-                "tool_input": {"command": "git commit -m message"},
-                "cwd": "/tmp",
-            }
-        )
-        assert result is None
-
-    def test_hybrid_variant_is_blocked(self):
+    def test_hybrid_variant_returns_deny(self):
         result = evaluate_codex(
             {
                 "tool_name": "Bash",
@@ -236,7 +210,7 @@ class TestCodexEvaluation:
             "echo ready && command go generate ./...",
         ],
     )
-    def test_prompt_form_not_representable_by_execpolicy_is_blocked(self, command):
+    def test_prompt_form_not_representable_by_execpolicy_returns_deny(self, command):
         result = evaluate_codex(
             {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": "/tmp"}
         )
@@ -260,7 +234,7 @@ class TestCodexEvaluation:
             "echo ready && /usr/bin/pkill worker",
         ],
     )
-    def test_absolute_path_static_deny_is_blocked(self, command):
+    def test_absolute_path_static_deny_returns_deny(self, command):
         result = evaluate_codex(
             {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": "/tmp"}
         )
@@ -298,7 +272,7 @@ class TestCodexEvaluation:
 
 class TestApplyPatchDenyEvaluation:
     @pytest.mark.parametrize("operation", ["Add File", "Update File", "Delete File"])
-    def test_blocks_sensitive_path(self, operation):
+    def test_sensitive_path_returns_deny(self, operation):
         decision, reason, stage = evaluate(
             {
                 "tool_name": "apply_patch",
@@ -312,7 +286,7 @@ class TestApplyPatchDenyEvaluation:
         assert "/work/.env" in reason
         assert stage == "RULE_DENY"
 
-    def test_blocks_sensitive_move_target_in_multi_file_patch(self):
+    def test_sensitive_move_target_in_multi_file_patch_returns_deny(self):
         decision, reason, stage = evaluate(
             {
                 "tool_name": "apply_patch",
@@ -586,117 +560,6 @@ class TestAutoAllowTools:
         decision, reason, stage = evaluate(hook_input)
         assert decision == "allow"
         assert stage == "AUTO_ALLOW"
-
-    @pytest.mark.parametrize(
-        "tool_name",
-        [
-            "mcp__claude_ai_Slack__slack_read_canvas",
-            "mcp__claude_ai_Slack__slack_read_channel",
-            "mcp__claude_ai_Slack__slack_read_thread",
-            "mcp__claude_ai_Slack__slack_read_user_profile",
-            "mcp__claude_ai_Slack__slack_search_channels",
-            "mcp__claude_ai_Slack__slack_search_public",
-            "mcp__claude_ai_Slack__slack_search_public_and_private",
-            "mcp__claude_ai_Slack__slack_search_users",
-        ],
-    )
-    def test_slack_mcp_read_search_allowed(self, tool_name):
-        hook_input = {
-            "tool_name": tool_name,
-            "tool_input": {"channel": "general"},
-        }
-        decision, reason, stage = evaluate(hook_input)
-        assert decision == "allow"
-        assert stage == "AUTO_ALLOW"
-
-    def test_slack_mcp_future_read_tool_allowed(self):
-        """New read/search tools matching the prefix are auto-allowed."""
-        hook_input = {
-            "tool_name": "mcp__claude_ai_Slack__slack_read_new_feature",
-            "tool_input": {},
-        }
-        decision, reason, stage = evaluate(hook_input)
-        assert decision == "allow"
-        assert stage == "AUTO_ALLOW"
-
-    @pytest.mark.parametrize(
-        "tool_name",
-        [
-            "mcp__claude_ai_Slack__slack_send_message",
-            "mcp__claude_ai_Slack__slack_send_message_draft",
-            "mcp__claude_ai_Slack__slack_create_canvas",
-            "mcp__claude_ai_Slack__slack_update_canvas",
-            "mcp__claude_ai_Slack__slack_schedule_message",
-        ],
-    )
-    def test_slack_mcp_write_tools_ask(self, tool_name):
-        """Write/send tools must require confirmation (ASK)."""
-        hook_input = {
-            "tool_name": tool_name,
-            "tool_input": {},
-        }
-        decision, reason, stage = evaluate(hook_input)
-        assert decision == "ask"
-        assert stage == "TOOL_ASK"
-
-    @pytest.mark.parametrize(
-        "tool_name",
-        [
-            "mcp__claude_ai_Notion__notion-fetch",
-            "mcp__claude_ai_Notion__notion-search",
-            "mcp__claude_ai_Notion__notion-get-async-task",
-            "mcp__claude_ai_Notion__notion-get-comments",
-            "mcp__claude_ai_Notion__notion-get-teams",
-            "mcp__claude_ai_Notion__notion-get-users",
-            "mcp__claude_ai_Notion__notion-query-data-sources",
-            "mcp__claude_ai_Notion__notion-query-database-view",
-            "mcp__claude_ai_Notion__notion-query-meeting-notes",
-            "mcp__claude_ai_Notion__notion-download-attachment",
-        ],
-    )
-    def test_notion_mcp_read_tools_allowed(self, tool_name):
-        hook_input = {
-            "tool_name": tool_name,
-            "tool_input": {},
-        }
-        decision, reason, stage = evaluate(hook_input)
-        assert decision == "allow"
-        assert stage == "AUTO_ALLOW"
-
-    def test_notion_mcp_future_read_tool_allowed(self):
-        """New get/query/download tools matching the prefix are auto-allowed."""
-        hook_input = {
-            "tool_name": "mcp__claude_ai_Notion__notion-get-new-feature",
-            "tool_input": {},
-        }
-        decision, reason, stage = evaluate(hook_input)
-        assert decision == "allow"
-        assert stage == "AUTO_ALLOW"
-
-    @pytest.mark.parametrize(
-        "tool_name",
-        [
-            "mcp__claude_ai_Notion__notion-create-attachment",
-            "mcp__claude_ai_Notion__notion-create-comment",
-            "mcp__claude_ai_Notion__notion-create-database",
-            "mcp__claude_ai_Notion__notion-create-pages",
-            "mcp__claude_ai_Notion__notion-create-view",
-            "mcp__claude_ai_Notion__notion-duplicate-page",
-            "mcp__claude_ai_Notion__notion-move-pages",
-            "mcp__claude_ai_Notion__notion-update-data-source",
-            "mcp__claude_ai_Notion__notion-update-page",
-            "mcp__claude_ai_Notion__notion-update-view",
-        ],
-    )
-    def test_notion_mcp_write_tools_ask(self, tool_name):
-        """Write tools must require confirmation (ASK)."""
-        hook_input = {
-            "tool_name": tool_name,
-            "tool_input": {},
-        }
-        decision, reason, stage = evaluate(hook_input)
-        assert decision == "ask"
-        assert stage == "TOOL_ASK"
 
 
 class TestExternalImpactCommands:

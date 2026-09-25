@@ -137,9 +137,9 @@ def _analysis_details(hook_input: dict[str, Any], request: dict[str, Any]) -> di
 
 def _reason_code(decision: str, stage: str, owner: str, analysis: dict[str, Any]) -> str:
     if stage == "EVALUATION_ERROR":
-        return "EVALUATION_FAILED_CLOSED"
+        return "EVALUATION_DENY_SELECTED"
     if stage == "INPUT_DENY":
-        return "INVALID_INPUT_BLOCKED"
+        return "INVALID_INPUT_DENY_SELECTED"
     if stage == "CODEX_RULE_PROMPT":
         return "ASK_COVERED_BY_EXECPOLICY"
     if stage == "CODEX_NATIVE":
@@ -149,7 +149,7 @@ def _reason_code(decision: str, stage: str, owner: str, analysis: dict[str, Any]
             segment.get("has_execpolicy_rule") and not segment.get("execpolicy_covered")
             for segment in analysis.get("segments", [])
         )
-        return "ASK_NOT_COVERED_BY_EXECPOLICY" if uncovered else "CODEX_RULE_BLOCKED"
+        return "ASK_NOT_COVERED_BY_EXECPOLICY" if uncovered else "CODEX_RULE_DENY_SELECTED"
     if stage == "RULE_DENY":
         return "STATIC_DENY_MATCHED"
     if stage == "RULE_ASK":

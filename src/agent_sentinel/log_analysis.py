@@ -128,8 +128,8 @@ def _audit_evaluation(event: dict[str, Any]) -> list[dict[str, str]]:
             _finding(
                 event_id,
                 "high",
-                "EVALUATION_FAILED_CLOSED",
-                "Policy evaluation raised an exception and returned a fail-closed DENY",
+                "EVALUATION_DENY_SELECTED",
+                "Policy evaluation raised an exception and selected DENY; host outcome is unknown",
             )
         )
 
@@ -161,8 +161,8 @@ def _audit_evaluation(event: dict[str, Any]) -> list[dict[str, str]]:
                 _finding(
                     event_id,
                     "critical",
-                    "DENY_BYPASS",
-                    f"DENY segment was not blocked: {raw}",
+                    "DENY_RESULT_MISMATCH",
+                    f"DENY segment was logged without a DENY result: {raw}",
                 )
             )
         if (

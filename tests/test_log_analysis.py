@@ -77,7 +77,7 @@ def test_audit_detects_uncovered_ask():
     }
 
 
-def test_audit_detects_deny_bypass():
+def test_audit_detects_deny_result_mismatch():
     event = _bash_event(
         "/usr/bin/pkill worker",
         result="defer",
@@ -87,7 +87,7 @@ def test_audit_detects_deny_bypass():
 
     findings = log_analysis.audit_events([event])
 
-    assert "DENY_BYPASS" in {finding["code"] for finding in findings}
+    assert "DENY_RESULT_MISMATCH" in {finding["code"] for finding in findings}
 
 
 def test_audit_detects_installed_codex_policy_drift():

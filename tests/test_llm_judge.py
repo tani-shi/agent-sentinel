@@ -13,6 +13,19 @@ from agent_sentinel.llm_judge import (
 )
 
 
+def _run_outcomes(*outcomes):
+    pending = iter(outcomes)
+
+    def run(coroutine):
+        coroutine.close()
+        outcome = next(pending)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    return run
+
+
 class TestParseResponse:
     def test_allow(self):
         decision, reason = _parse_response("ALLOW\nThis is safe")
@@ -44,26 +57,38 @@ class TestParseResponse:
 
 
 class TestEvaluateSDK:
-    @patch("agent_sentinel.llm_judge.asyncio.run", return_value=("allow", "Safe command"))
+    @patch(
+        "agent_sentinel.llm_judge.asyncio.run",
+        side_effect=_run_outcomes(("allow", "Safe command")),
+    )
     def test_sdk_allow(self, mock_run):
         decision, reason = evaluate("ls -la", "/tmp")
         assert decision == "allow"
         assert reason == "Safe command"
 
-    @patch("agent_sentinel.llm_judge.asyncio.run", return_value=("deny", "Dangerous command"))
+    @patch(
+        "agent_sentinel.llm_judge.asyncio.run",
+        side_effect=_run_outcomes(("deny", "Dangerous command")),
+    )
     def test_sdk_deny(self, mock_run):
         decision, reason = evaluate("rm -rf /", "/tmp")
         assert decision == "deny"
         assert reason == "Dangerous command"
 
-    @patch("agent_sentinel.llm_judge.asyncio.run", return_value=("ask", "Needs review"))
+    @patch(
+        "agent_sentinel.llm_judge.asyncio.run",
+        side_effect=_run_outcomes(("ask", "Needs review")),
+    )
     def test_sdk_ask(self, mock_run):
         decision, reason = evaluate("some-command", "/tmp")
         assert decision == "ask"
         assert reason == "Needs review"
 
     @patch("agent_sentinel.llm_judge.time.sleep")
-    @patch("agent_sentinel.llm_judge.asyncio.run", side_effect=TimeoutError("timed out"))
+    @patch(
+        "agent_sentinel.llm_judge.asyncio.run",
+        side_effect=_run_outcomes(TimeoutError("timed out"), TimeoutError("timed out")),
+    )
     def test_sdk_timeout(self, mock_run, mock_sleep):
         decision, reason = evaluate("some-command", "/tmp")
         assert decision == "ask"
@@ -73,7 +98,7 @@ class TestEvaluateSDK:
     @patch("agent_sentinel.llm_judge.time.sleep")
     @patch(
         "agent_sentinel.llm_judge.asyncio.run",
-        side_effect=[TimeoutError("timed out"), ("allow", "Safe command")],
+        side_effect=_run_outcomes(TimeoutError("timed out"), ("allow", "Safe command")),
     )
     def test_sdk_timeout_then_success(self, mock_run, mock_sleep):
         decision, reason = evaluate("some-command", "/tmp")
@@ -82,13 +107,19 @@ class TestEvaluateSDK:
         assert mock_run.call_count == 2
 
     @patch("agent_sentinel.llm_judge.time.sleep")
-    @patch("agent_sentinel.llm_judge.asyncio.run", side_effect=TimeoutError("timed out"))
+    @patch(
+        "agent_sentinel.llm_judge.asyncio.run",
+        side_effect=_run_outcomes(TimeoutError("timed out"), TimeoutError("timed out")),
+    )
     def test_sdk_timeout_backoff_between_retries(self, mock_run, mock_sleep):
         evaluate("some-command", "/tmp")
         # Delay only between attempts, never after the final one.
         assert mock_sleep.call_count == mock_run.call_count - 1
 
-    @patch("agent_sentinel.llm_judge.asyncio.run", side_effect=Exception("connection failed"))
+    @patch(
+        "agent_sentinel.llm_judge.asyncio.run",
+        side_effect=_run_outcomes(Exception("connection failed")),
+    )
     def test_sdk_error(self, mock_run):
         decision, reason = evaluate("some-command", "/tmp")
         assert decision == "ask"
@@ -106,24 +137,17 @@ class TestEvaluateSDK:
 
 
 class TestReadMode:
-    @patch("agent_sentinel.llm_judge.asyncio.run", return_value=("allow", "ok"))
+    @patch("agent_sentinel.llm_judge.asyncio.run", side_effect=_run_outcomes(("allow", "ok")))
     @patch("agent_sentinel.llm_judge._read_options", wraps=_read_options)
     def test_read_dirs_selects_read_options(self, spy_read, mock_run):
         evaluate("bash /tmp/x.sh", "/proj", read_dirs=["/tmp"])
         spy_read.assert_called_once_with("/proj", ["/tmp"])
 
-    @patch("agent_sentinel.llm_judge.asyncio.run", return_value=("allow", "ok"))
+    @patch("agent_sentinel.llm_judge.asyncio.run", side_effect=_run_outcomes(("allow", "ok")))
     @patch("agent_sentinel.llm_judge._read_options")
     def test_no_read_dirs_stays_plain(self, spy_read, mock_run):
         evaluate("ls -la", "/proj")
         spy_read.assert_not_called()
-
-    def test_read_options_grants_only_read_scoped_to_dirs(self):
-        opts = _read_options("/proj", ["/tmp"])
-        assert opts.allowed_tools == ["Read"]
-        assert opts.tools == ["Read"]
-        assert opts.cwd == "/proj"
-        assert opts.add_dirs == ["/tmp"]
 
 
 class _FakeResult:

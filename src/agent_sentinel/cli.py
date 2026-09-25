@@ -12,7 +12,6 @@ from typing import IO
 from agent_sentinel import (
     codex_installer,
     codex_io,
-    codex_tasks,
     evaluator,
     hook_io,
     installer,
@@ -312,9 +311,6 @@ def _run_hook(*, host: str, judge: str, explain: bool = False) -> None:
         print(f"Error reading input: {e}", file=sys.stderr)
         sys.exit(1)
 
-    if host == "codex" and _run_codex_task_hook(hook_input):
-        return
-
     t0 = time.monotonic()
     try:
         result = _evaluate_hook_input(hook_input, host=host, judge=judge)
@@ -361,41 +357,6 @@ def _run_hook(*, host: str, judge: str, explain: bool = False) -> None:
         codex_io.write_output(decision, reason)
     else:
         hook_io.write_output(decision, reason)
-
-
-def _run_codex_task_hook(hook_input: dict) -> bool:
-    event = hook_input.get("hook_event_name")
-    if event == "PostToolUse":
-        if hook_input.get("tool_name") == codex_tasks.CREATE_TASK_TOOL:
-            codex_tasks.record_created_task(hook_input)
-        return True
-    if event != "PermissionRequest":
-        return False
-
-    started = time.monotonic()
-    if codex_tasks.owns_message_target(hook_input):
-        reason = "The target is a direct child of the requesting task"
-        logger.log_evaluation(
-            hook_input,
-            "allow",
-            reason,
-            "CODEX_OWNED_TASK_ALLOW",
-            (time.monotonic() - started) * 1000,
-            host="codex",
-            owner="hook",
-        )
-        codex_io.allow_permission()
-    else:
-        logger.log_evaluation(
-            hook_input,
-            "defer",
-            "Task ownership is not recorded; Codex native human approval applies",
-            "CODEX_NATIVE_PROMPT",
-            (time.monotonic() - started) * 1000,
-            host="codex",
-            owner="native",
-        )
-    return True
 
 
 def _run_log(args: argparse.Namespace) -> None:

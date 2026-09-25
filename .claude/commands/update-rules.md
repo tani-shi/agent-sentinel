@@ -120,24 +120,17 @@ tests) directly.
    # --- Google Cloud ---                   # ← next section unchanged
    ```
 
-9. **Add targeted tests for the new rules** by editing
-   `tests/test_rules.py`:
-   - For each new ALLOW rule: add an assertion in the `TestAllowRules`
-     class (e.g. `assert match_allow("...") is not None`).
-   - For each new ASK rule: add an assertion in the `TestAskRules`
-     class.
-   - Use a minimal but representative sample command. Match the style
-     of the existing tests in that file.
-
-10. Run `make check` to confirm the new rules and tests pass:
+9. Run `make check` to check the local rule evaluator and existing tests:
     ```
     make check
     ```
     If anything fails, surface the failure to the user and let them
     decide whether to refine the regex, drop the rule, or fix the
-    test. Do not silently revert edits.
+    failure. Do not silently revert edits. Keep new tests in Git only
+    when the user explicitly requests them. Tests of local rule matching
+    do not establish host approval or execution behavior.
 
-11. Show the user the resulting diff:
+10. Show the user the resulting diff:
     ```
     git diff src/agent_sentinel/rules/ tests/test_rules.py
     ```
@@ -150,7 +143,7 @@ Each `[[rules]]` regex must:
 - Be anchored with `^` (Python `re.search` matches anywhere otherwise).
 - Use `( |$)` (with a leading space) after the head/subcommand to
   avoid prefix overlap (e.g. `git` matching `github`).
-- Be conservative — better one extra ask prompt than silently allowing
+- Be conservative — better one extra ASK classification than silently allowing
   a risky command. When unsure, suggest ASK.
 - Avoid prefix-option clutter (`-c key=val`, `--no-pager`, `--silent`,
   `-q`, `-R`, `-j N` etc.). The matching engine strips known prefix

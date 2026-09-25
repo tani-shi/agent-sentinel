@@ -8,7 +8,6 @@ import tomllib
 from copy import deepcopy
 from pathlib import Path
 
-from agent_sentinel import codex_approval, codex_tasks
 from agent_sentinel.codex_policy import render_rules
 
 CODEX_HOME = Path.home() / ".codex"
@@ -26,29 +25,7 @@ HOOK_ENTRY = {
         }
     ],
 }
-HOOK_ENTRIES = {
-    HOOK_EVENT: HOOK_ENTRY,
-    "PostToolUse": {
-        "matcher": codex_tasks.CREATE_TASK_TOOL,
-        "hooks": [
-            {
-                "type": "command",
-                "command": "agent-sentinel --host codex",
-                "statusMessage": "Recording task ownership",
-            }
-        ],
-    },
-    "PermissionRequest": {
-        "matcher": codex_tasks.SEND_MESSAGE_TOOL,
-        "hooks": [
-            {
-                "type": "command",
-                "command": "agent-sentinel --host codex",
-                "statusMessage": "Checking task ownership",
-            }
-        ],
-    },
-}
+HOOK_ENTRIES = {HOOK_EVENT: HOOK_ENTRY}
 
 
 def _is_sentinel_hook(hook: dict) -> bool:
@@ -115,6 +92,21 @@ def _install_hook(path: Path) -> bool:
     config = _load_json(path)
     hooks = config.setdefault("hooks", {})
     changed = False
+    for event in ("PostToolUse", "PermissionRequest"):
+        entries = hooks.get(event, [])
+        filtered = []
+        for entry in entries:
+            kept_handlers = [
+                hook for hook in entry.get("hooks", []) if not _is_sentinel_hook(hook)
+            ]
+            if kept_handlers:
+                filtered.append({**entry, "hooks": kept_handlers})
+        if filtered != entries:
+            changed = True
+            if filtered:
+                hooks[event] = filtered
+            else:
+                hooks.pop(event)
     for event, managed_entry in HOOK_ENTRIES.items():
         entries = hooks.get(event, [])
         normalized_entries = []
@@ -196,9 +188,6 @@ def _configuration_notices(path: Path) -> list[str]:
             "is not guaranteed. Native approvals and auto-review are also unavailable. Use "
             "on-request for the supported configuration."
         )
-    approval_error = codex_approval.approval_config_error(path)
-    if approval_error:
-        notices.append(f"Warning: {approval_error}")
     return notices
 
 
