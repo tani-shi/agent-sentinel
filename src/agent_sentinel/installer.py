@@ -28,7 +28,7 @@ DENY_RULE_TOOLS = ("Edit", "Read")
 
 # Deny globs for these tools are no longer generated but may linger from an
 # earlier install; strip them. The bare allow entry stays (Write is still a
-# live runtime tool), so in-project writes keep flowing prompt-free.
+# live runtime tool), so ordinary in-project writes retain their allow entry.
 STALE_DENY_TOOLS = ["Write"]
 
 # Globs a rule once emitted but no longer does. _remove_stale_permissions derives
@@ -59,12 +59,9 @@ def _deny_entries(tools: tuple[str, ...] | list[str], globs: list[str]) -> list[
 def _get_managed_permissions() -> dict[str, list[str]]:
     """Get managed permission entries from rules and evaluator.
 
-    File tools are blanket-allowed so ordinary in-project edits never prompt.
-    The PreToolUse hook fires on every tool call, so its sensitive-path
-    evaluation now sees these too, but the generated permissions.deny entries
-    are kept as defense-in-depth: deny rules are evaluated before allow rules
-    and before the hook, and they still guard sensitive paths on the sub-agent
-    and background paths where the hook is not guaranteed to fire.
+    File tools receive allow entries for ordinary in-project edits. The
+    installer also writes deny and ask entries. Their runtime effect depends
+    on Claude Code's permission handling.
     """
     return {
         "deny": sorted(_deny_entries(DENY_RULE_TOOLS, rule_engine.sensitive_path_globs())),

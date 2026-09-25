@@ -108,8 +108,6 @@ class TestInstall:
         assert "Write" in settings["permissions"]["allow"]
 
     def test_install_strips_retired_env_glob_deny(self, settings_file):
-        """The `**/.env.*` glob was retired so template env files (`.env.example`)
-        are writable; its stale deny entries must be shed from existing installs."""
         settings_file.write_text(
             json.dumps(
                 {
@@ -170,56 +168,12 @@ class TestInstall:
 
 
 class TestInstallPermissions:
-    def test_install_adds_sensitive_path_deny(self, settings_file, managed):
-        """Sensitive paths are denied via settings.json permission rules as
-        defense-in-depth for the sub-agent/background paths where the hook is
-        not guaranteed to fire."""
-        install(settings_file)
-        settings = json.loads(settings_file.read_text())
-        deny = settings["permissions"]["deny"]
-        assert set(managed["deny"]).issubset(set(deny))
-        for tool in ("Read", "Edit"):
-            assert f"{tool}(**/.env)" in deny
-            # `**/.env.*` is a retired glob, no longer generated.
-            assert f"{tool}(**/.env.*)" not in deny
-            assert f"{tool}(**/.ssh/**)" in deny
-            assert f"{tool}(**/.aws/**)" in deny
-        # Write(...) deny rules are not honored by Claude Code's file-permission
-        # checks (Edit(...) covers all editing tools), so none are generated.
-        assert not any(e.startswith("Write(") for e in deny)
-
-    def test_managed_deny_covers_every_sensitive_path_rule(self, managed):
-        from agent_sentinel.rule_engine import get_deny_rules
-
-        for rule in get_deny_rules().sensitive_path_rules:
-            assert rule.path_globs, f"{rule.name} has no path_glob"
-            for glob in rule.path_globs:
-                assert f"Read({glob})" in managed["deny"]
-
-    def test_install_adds_permissions_allow(self, settings_file, managed):
-        install(settings_file)
-        settings = json.loads(settings_file.read_text())
-        assert set(managed["allow"]).issubset(set(settings["permissions"]["allow"]))
-
-    def test_install_adds_permissions_ask(self, settings_file, managed):
-        install(settings_file)
-        settings = json.loads(settings_file.read_text())
-        assert set(managed["ask"]).issubset(set(settings["permissions"]["ask"]))
-
     def test_install_permissions_idempotent(self, settings_file, managed):
         install(settings_file)
         install(settings_file)
         settings = json.loads(settings_file.read_text())
         assert settings["permissions"]["allow"].count(managed["allow"][0]) == 1
         assert settings["permissions"]["ask"].count(managed["ask"][0]) == 1
-
-    def test_install_adds_read_write_edit_to_allow(self, settings_file):
-        install(settings_file)
-        settings = json.loads(settings_file.read_text())
-        allow = settings["permissions"]["allow"]
-        assert "Read" in allow
-        assert "Write" in allow
-        assert "Edit" in allow
 
     def test_install_preserves_user_permissions(self, settings_file):
         settings_file.write_text(

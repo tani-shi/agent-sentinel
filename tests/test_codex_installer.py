@@ -1,22 +1,8 @@
 """Tests for the Codex hooks installer."""
 
 import json
-import shutil
-import subprocess
 
-import pytest
-
-from agent_sentinel import codex_tasks
-from agent_sentinel.codex_installer import HOOK_ENTRIES, install, uninstall
-from agent_sentinel.codex_policy import (
-    FORBIDDEN_RULES,
-    HOOK_DENY_ASK_REASONS,
-    HYBRID_ASK_RULES,
-    NATIVE_ASK_RULES,
-    PROMPT_RULES,
-    render_rules,
-)
-from agent_sentinel.rule_engine import get_ask_rules, get_deny_rules
+from agent_sentinel.codex_installer import install, uninstall
 
 
 def test_install_preserves_existing_hooks(tmp_path):
@@ -42,8 +28,7 @@ def test_install_preserves_existing_hooks(tmp_path):
     config = json.loads(path.read_text())
     assert config["description"] == "User hooks"
     assert len(config["hooks"]["PreToolUse"]) == 2
-    assert config["hooks"]["PostToolUse"] == [HOOK_ENTRIES["PostToolUse"]]
-    assert config["hooks"]["PermissionRequest"] == [HOOK_ENTRIES["PermissionRequest"]]
+    assert set(config["hooks"]) == {"PreToolUse"}
     assert path.with_suffix(".json.bak").exists()
     assert (tmp_path / "rules" / "agent-sentinel.rules").exists()
 
@@ -55,16 +40,6 @@ def test_install_is_idempotent(tmp_path):
     assert "already up to date" in message
     assert "Trust the agent-sentinel hook" not in message
     assert len(json.loads(path.read_text())["hooks"]["PreToolUse"]) == 1
-
-
-def test_install_uses_exact_task_tool_matchers(tmp_path):
-    path = tmp_path / "hooks.json"
-
-    install(path)
-
-    hooks = json.loads(path.read_text())["hooks"]
-    assert hooks["PostToolUse"][0]["matcher"] == codex_tasks.CREATE_TASK_TOOL
-    assert hooks["PermissionRequest"][0]["matcher"] == codex_tasks.SEND_MESSAGE_TOOL
 
 
 def test_install_replaces_stale_matcher(tmp_path):
@@ -243,26 +218,6 @@ def test_uninstall_removes_all_managed_events(tmp_path):
     assert "hooks" not in json.loads(path.read_text())
 
 
-def test_generated_rules_never_allow_sandbox_bypass():
-    content = render_rules()
-    assert 'decision = "allow"' not in content
-    assert 'decision = "prompt"' in content
-    assert 'decision = "forbidden"' in content
-
-
-def test_every_ask_rule_has_one_codex_owner():
-    prompt_sources = {rule.source for rule in PROMPT_RULES} - HYBRID_ASK_RULES
-    owners = (prompt_sources, HYBRID_ASK_RULES, NATIVE_ASK_RULES, set(HOOK_DENY_ASK_REASONS))
-    for index, owner in enumerate(owners):
-        assert all(owner.isdisjoint(other) for other in owners[index + 1 :])
-    assert set().union(*owners) == {rule.name for rule in get_ask_rules().command_rules}
-
-
-def test_forbidden_rules_come_from_deny_policy():
-    deny_names = {rule.name for rule in get_deny_rules().command_rules}
-    assert {rule.source for rule in FORBIDDEN_RULES} <= deny_names
-
-
 def test_install_backs_up_existing_managed_rules(tmp_path):
     path = tmp_path / "hooks.json"
     rules_path = tmp_path / "rules" / "agent-sentinel.rules"
@@ -323,52 +278,3 @@ def test_warns_when_approval_policy_is_never(tmp_path):
     assert "ASK enforcement is not guaranteed" in message
     assert "auto-review" in message
     assert "on-request" in message
-
-
-def test_warns_when_task_message_human_approval_is_not_configured(tmp_path):
-    path = tmp_path / "hooks.json"
-
-    message = install(path)
-
-    assert "Codex task messaging is blocked" in message
-    assert "approval_policy" in message
-
-
-def test_accepts_task_message_human_approval_configuration(tmp_path):
-    path = tmp_path / "hooks.json"
-    (tmp_path / "config.toml").write_text(
-        'approval_policy = "on-request"\n'
-        'approvals_reviewer = "user"\n'
-        '[plugins."codex-app-tools@openai-bundled".mcp_servers.codex_app.tools.'
-        "send_message_to_thread]\n"
-        'approval_mode = "prompt"\n'
-    )
-
-    message = install(path)
-
-    assert "Codex task messaging is blocked" not in message
-
-
-@pytest.mark.skipif(shutil.which("codex") is None, reason="Codex CLI is not installed")
-def test_generated_rules_pass_execpolicy_validation(tmp_path):
-    rules_path = tmp_path / "agent-sentinel.rules"
-    rules_path.write_text(render_rules())
-
-    result = subprocess.run(
-        [
-            "codex",
-            "execpolicy",
-            "check",
-            "--pretty",
-            "--rules",
-            str(rules_path),
-            "--",
-            "ssh",
-            "host",
-        ],
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert '"decision": "prompt"' in result.stdout

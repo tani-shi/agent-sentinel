@@ -83,8 +83,8 @@ def evaluate(command: str, cwd: str, read_dirs: Sequence[str] | None = None) -> 
     """Evaluate a command using the LLM judge.
 
     Returns (decision, reason) where decision is "allow", "deny", or "ask".
-    Clearly dangerous commands are denied; commands needing human judgment are
-    asked. A timeout or error falls back to "ask" so the human decides.
+    Clearly dangerous commands are denied; commands needing further review are
+    classified as "ask". A timeout or error also returns "ask".
 
     When ``read_dirs`` is given, the judge runs in read mode: it is granted the
     built-in Read tool scoped to ``cwd`` plus ``read_dirs`` so it can inspect
@@ -118,7 +118,7 @@ def evaluate(command: str, cwd: str, read_dirs: Sequence[str] | None = None) -> 
 def _parse_response(output: str) -> tuple[str, str]:
     """Parse the LLM response into (decision, reason).
 
-    An empty or unexpected response falls back to "ask" so the human decides.
+    An empty or unexpected response falls back to "ask".
     """
     if not output:
         return "ask", "Empty LLM response"

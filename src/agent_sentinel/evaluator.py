@@ -5,7 +5,7 @@ from __future__ import annotations
 from fnmatch import fnmatch
 from typing import Any
 
-from agent_sentinel import codex_approval, codex_policy, llm_judge
+from agent_sentinel import codex_policy, llm_judge
 from agent_sentinel import rule_engine as rules
 from agent_sentinel.patch_paths import extract_paths
 
@@ -80,10 +80,6 @@ def evaluate_codex(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
     tool_name = hook_input.get("tool_name", "")
     tool_input = hook_input.get("tool_input", {})
 
-    approval_error = codex_approval.protected_tool_error(hook_input)
-    if approval_error:
-        return "deny", approval_error, "CODEX_APPROVAL_DENY"
-
     if tool_name == "Bash":
         command = tool_input.get("command", "")
         cwd = hook_input.get("cwd", ".")
@@ -119,12 +115,6 @@ def evaluate_codex(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
 
 def codex_defer_target(hook_input: dict[str, Any]) -> tuple[str, str, str]:
     """Describe the Codex policy layer that owns a hook defer."""
-    if hook_input.get("tool_name") == codex_approval.TASK_MESSAGE_TOOL:
-        return (
-            "native",
-            "CODEX_NATIVE_PROMPT",
-            "No hook denial; Codex native human approval applies",
-        )
     if hook_input.get("tool_name") == "Bash":
         command = hook_input.get("tool_input", {}).get("command", "")
         cwd = hook_input.get("cwd", ".")

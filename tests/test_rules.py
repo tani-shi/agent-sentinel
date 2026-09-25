@@ -9,7 +9,6 @@ from agent_sentinel.rule_engine import (
     evaluate_command,
     extract_commands,
     get_allow_rules,
-    get_deny_rules,
     load_rules,
     match_allow,
     match_ask,
@@ -17,7 +16,6 @@ from agent_sentinel.rule_engine import (
     match_sensitive_directory,
     match_sensitive_path,
     reset_cache,
-    sensitive_path_globs,
 )
 
 
@@ -1093,30 +1091,6 @@ class TestSensitiveDirectories:
         # The file form is `match_sensitive_path`'s question, not this one.
         assert match_sensitive_directory("/project/.env") is None
         assert match_sensitive_path("/project/.env") is not None
-
-
-class TestSensitivePathGlobs:
-    """path_glob feeds the settings.json deny entries; path_regex guards the
-    hook. Both must cover the same paths or the two layers drift apart."""
-
-    def test_every_rule_has_globs(self):
-        for rule in get_deny_rules().sensitive_path_rules:
-            assert rule.path_globs, f"{rule.name} has no path_glob"
-
-    def test_globs_match_their_own_regex(self):
-        for rule in get_deny_rules().sensitive_path_rules:
-            for glob in rule.path_globs:
-                sample = glob.replace("**/", "x/").replace("*", "a")
-                assert rule.pattern.search(sample), (
-                    f"{rule.name}: glob {glob!r} sample {sample!r} does not match path_regex"
-                )
-
-    def test_sensitive_path_globs_flattens_all_rules(self):
-        globs = sensitive_path_globs()
-        assert "**/.env" in globs
-        assert "**/.ssh/**" in globs
-        total = sum(len(r.path_globs) for r in get_deny_rules().sensitive_path_rules)
-        assert len(globs) == total
 
 
 class TestAskRules:

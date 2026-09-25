@@ -25,8 +25,6 @@ def policy_details(host: str) -> dict[str, Any]:
             "rule_engine.py",
             "command_normalizer.py",
             "deletion_scope.py",
-            "codex_approval.py",
-            "codex_tasks.py",
             "codex_policy.py",
         )
     )

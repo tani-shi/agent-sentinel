@@ -24,10 +24,8 @@ def write_output(
     Emits {"hookSpecificOutput": {"hookEventName": "PreToolUse",
     "permissionDecision": "allow"|"deny"|"ask", "permissionDecisionReason": "..."}}.
 
-    "ask" is an explicit decision (forces a prompt) rather than an empty
-    passthrough: a PreToolUse "allow" no longer short-circuits the project's
-    settings.json ask/deny, and an explicit "ask" outranks any settings allow,
-    so a sentinel ask always reaches the user.
+    "ask" requests user confirmation in interactive Claude Code sessions.
+    This function writes a hook response; it cannot observe the host outcome.
     """
     stream = stdout if stdout is not None else sys.stdout
     output = {

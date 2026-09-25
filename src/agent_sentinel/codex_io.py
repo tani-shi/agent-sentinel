@@ -24,18 +24,3 @@ def write_output(decision: str, reason: str, stdout: TextIO | None = None) -> No
         stream,
     )
     stream.write("\n")
-
-
-def allow_permission(stdout: TextIO | None = None) -> None:
-    """Allow a Codex PermissionRequest without surfacing its prompt."""
-    stream = stdout if stdout is not None else sys.stdout
-    json.dump(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "PermissionRequest",
-                "decision": {"behavior": "allow"},
-            }
-        },
-        stream,
-    )
-    stream.write("\n")
