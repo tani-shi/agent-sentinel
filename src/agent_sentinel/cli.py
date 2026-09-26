@@ -47,6 +47,12 @@ def main(argv: list[str] | None = None) -> None:
         metavar="COMMAND",
         help="Test a command with synthetic hook input",
     )
+    parser.add_argument(
+        "--event",
+        choices=["PreToolUse", "PermissionRequest"],
+        default="PreToolUse",
+        help="Hook event for --test (default: PreToolUse)",
+    )
 
     subparsers = parser.add_subparsers(dest="subcommand")
     install_parser = subparsers.add_parser("install", help="Install hooks into an agent host")
@@ -159,7 +165,7 @@ def main(argv: list[str] | None = None) -> None:
 
     judge = args.judge or ("disabled" if args.host == "codex" else "claude")
     if args.test:
-        _run_test(args.test, host=args.host, judge=judge, explain=args.explain)
+        _run_test(args.test, host=args.host, judge=judge, explain=args.explain, event=args.event)
         return
 
     # Default: hook mode — read from stdin, evaluate, write to stdout
@@ -253,16 +259,25 @@ def _evaluate_hook_input(
     hook_input: dict, *, host: str, judge: str
 ) -> tuple[str, str, str] | None:
     if host == "codex":
+        if hook_input.get("hook_event_name") == "PermissionRequest":
+            return evaluator.evaluate_codex_permission_request(hook_input)
         return evaluator.evaluate_codex(hook_input)
     return evaluator.evaluate(hook_input, judge=judge)
 
 
-def _run_test(command: str, *, host: str, judge: str, explain: bool = False) -> None:
+def _run_test(
+    command: str,
+    *,
+    host: str,
+    judge: str,
+    explain: bool = False,
+    event: str = "PreToolUse",
+) -> None:
     """Test a command with synthetic hook input."""
     import os
 
     hook_input = {
-        "hook_event_name": "PreToolUse",
+        "hook_event_name": event,
         "tool_name": "Bash",
         "tool_input": {"command": command},
         "session_id": "test",
@@ -311,6 +326,7 @@ def _run_hook(*, host: str, judge: str, explain: bool = False) -> None:
         print(f"Error reading input: {e}", file=sys.stderr)
         sys.exit(1)
 
+    event = hook_input.get("hook_event_name", "PreToolUse")
     t0 = time.monotonic()
     try:
         result = _evaluate_hook_input(hook_input, host=host, judge=judge)
@@ -327,7 +343,7 @@ def _run_hook(*, host: str, judge: str, explain: bool = False) -> None:
                 host=host,
                 owner="hook",
             )
-            codex_io.write_output("deny", reason)
+            codex_io.write_output("deny", reason, event=event)
             return
         raise
     elapsed_ms = (time.monotonic() - t0) * 1000
@@ -354,7 +370,7 @@ def _run_hook(*, host: str, judge: str, explain: bool = False) -> None:
         print(f"[agent-sentinel] {tool_name}: {decision} [{stage}] {reason}", file=sys.stderr)
 
     if host == "codex":
-        codex_io.write_output(decision, reason)
+        codex_io.write_output(decision, reason, event=event)
     else:
         hook_io.write_output(decision, reason)
 
