@@ -14,8 +14,7 @@ CODEX_HOME = Path.home() / ".codex"
 HOOKS_PATH = CODEX_HOME / "hooks.json"
 RULES_PATH = CODEX_HOME / "rules" / "agent-sentinel.rules"
 CONFIG_PATH = CODEX_HOME / "config.toml"
-HOOK_EVENT = "PreToolUse"
-HOOK_ENTRY = {
+PRE_TOOL_USE_ENTRY = {
     "matcher": "*",
     "hooks": [
         {
@@ -25,7 +24,20 @@ HOOK_ENTRY = {
         }
     ],
 }
-HOOK_ENTRIES = {HOOK_EVENT: HOOK_ENTRY}
+PERMISSION_REQUEST_ENTRY = {
+    "matcher": "^Bash$",
+    "hooks": [
+        {
+            "type": "command",
+            "command": "agent-sentinel --host codex",
+            "statusMessage": "Checking command permission",
+        }
+    ],
+}
+HOOK_ENTRIES = {
+    "PreToolUse": PRE_TOOL_USE_ENTRY,
+    "PermissionRequest": PERMISSION_REQUEST_ENTRY,
+}
 
 
 def _is_sentinel_hook(hook: dict) -> bool:
@@ -92,7 +104,7 @@ def _install_hook(path: Path) -> bool:
     config = _load_json(path)
     hooks = config.setdefault("hooks", {})
     changed = False
-    for event in ("PostToolUse", "PermissionRequest"):
+    for event in ("PostToolUse",):
         entries = hooks.get(event, [])
         filtered = []
         for entry in entries:

@@ -113,8 +113,32 @@ def evaluate_codex(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
     return result if result[0] == "deny" else None
 
 
+def evaluate_codex_permission_request(
+    hook_input: dict[str, Any],
+) -> tuple[str, str, str] | None:
+    """Approve only Bash commands classified ALLOW by the shared static rules."""
+    if hook_input.get("tool_name") != "Bash":
+        return None
+    blocked = evaluate_codex(hook_input)
+    if blocked is not None:
+        return blocked
+    command = hook_input.get("tool_input", {}).get("command")
+    if not isinstance(command, str) or not command.strip():
+        return None
+    result = rules.evaluate_bash_command(command, hook_input.get("cwd", "."))
+    if result.decision == "allow":
+        return "allow", result.reason, "RULE_ALLOW"
+    return None
+
+
 def codex_defer_target(hook_input: dict[str, Any]) -> tuple[str, str, str]:
     """Describe the Codex policy layer that owns a hook defer."""
+    if hook_input.get("hook_event_name") == "PermissionRequest":
+        return (
+            "native",
+            "CODEX_PERMISSION_DEFER",
+            "No static ALLOW; Codex approval flow applies",
+        )
     if hook_input.get("tool_name") == "Bash":
         command = hook_input.get("tool_input", {}).get("command", "")
         cwd = hook_input.get("cwd", ".")

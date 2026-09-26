@@ -2,20 +2,22 @@
 
 agent-sentinel is a safety guard that inspects tool calls made by Claude Code and Codex. It uses hooks and permissions in Claude Code, and the sandbox, execution rules, native approvals, and hooks in Codex.
 
-agent-sentinel never grants sandbox bypass. Its execution rules use only `prompt` and `forbidden`, and it leaves `~/.codex/rules/default.rules` untouched.
+agent-sentinel's Codex execution rules use only `prompt` and `forbidden`, and it leaves `~/.codex/rules/default.rules` untouched. Its PermissionRequest hook can approve an existing Codex approval request when the shared static rules classify the Bash command as ALLOW.
 
 ## Support matrix
 
 | Capability | Claude Code | Codex |
 |---|---|---|
-| Bash | Static ALLOW / ASK / DENY rules and an LLM judge | Execution-rule `prompt` / `forbidden` decisions and deterministic hook DENY decisions |
+| Bash | Static ALLOW / ASK / DENY rules and an LLM judge | PreToolUse DENY, PermissionRequest ALLOW, and execution-rule `prompt` / `forbidden` decisions |
 | File operations | Read / Write / Edit | apply_patch |
 | Sensitive paths | Hook and `permissions.deny` | Hook inspection of apply_patch |
 | ASK | Emit `ask` from PreToolUse | Generate execution-rule `prompt` targets or defer to native policy |
 | Semantic LLM decisions | Claude Agent SDK | The configured Codex reviewer when an approval request occurs |
 | Installation target | `~/.claude/settings.json` | `~/.codex/hooks.json` and `~/.codex/rules/agent-sentinel.rules` |
 
-Codex PreToolUse emits deterministic DENY decisions; it cannot request approval with `ask`. Prefix-expressible ASK rules use `prompt` in `.rules`; other ASK rules defer to native policy. A matching rule or a hook `defer` result does not establish that an approval request occurred. When Codex does request approval, `auto_review` routes eligible requests to a reviewer agent instead of the user.
+Codex PreToolUse emits deterministic DENY decisions; it cannot request approval with `ask`. Prefix-expressible ASK rules use `prompt` in `.rules`; other ASK rules defer to native policy. When Codex creates a Bash approval request, agent-sentinel evaluates the shared static rules in DENY → ASK → ALLOW order. It approves only ALLOW commands, repeats PreToolUse denials as a fallback, and leaves other commands to Codex's normal approval flow. With `approvals_reviewer = "auto_review"`, eligible deferred requests reach the reviewer agent. A matching rule or a PreToolUse `defer` result does not establish that an approval request occurred.
+
+PermissionRequest does not identify why Codex requested approval. An agent-sentinel ALLOW result can therefore also approve a Bash request prompted by another Codex policy layer. The PermissionRequest hook covers Bash only; `apply_patch` approval requests remain with Codex. PreToolUse DENY still applies before tools run, including to commands that would stay inside the sandbox.
 
 For supported Codex tool calls, agent-sentinel emits DENY for three high-risk ASK patterns:
 
@@ -52,7 +54,7 @@ uv tool install '.[claude]'
 agent-sentinel install --target all
 ```
 
-The Codex installer merges into an existing `hooks.json` without replacing unrelated entries and generates a dedicated `agent-sentinel.rules` file. If a target already exists, it saves a `.bak` file beside it. After installation, start a new Codex task, inspect the agent-sentinel hook in one of the following locations, and trust it:
+The Codex installer merges PreToolUse and PermissionRequest entries into an existing `hooks.json` without replacing unrelated entries and generates a dedicated `agent-sentinel.rules` file. If a target already exists, it saves a `.bak` file beside it. After installation, start a new Codex task, inspect the agent-sentinel hooks in one of the following locations, and trust them:
 
 - Codex GUI: Settings > Hooks
 - Codex CLI: `/hooks`
@@ -74,9 +76,10 @@ The recommended layers are `workspace-write`, `on-request`, execution rules, and
 ```toml
 sandbox_mode = "workspace-write"
 approval_policy = "on-request"
+approvals_reviewer = "auto_review"
 ```
 
-agent-sentinel does not rewrite `config.toml`. It warns if hooks are disabled or approval requests are unavailable.
+agent-sentinel does not rewrite `config.toml`. It warns if hooks are disabled or approval requests are unavailable. Set `approvals_reviewer = "user"` to send deferred requests to a person instead.
 
 This repository distributes read-only Codex CLI permissions for development in [`.codex/rules/codex-readonly.rules`](.codex/rules/codex-readonly.rules). When opened as a trusted project, it permits review, rule validation, diagnostics, and configuration listing without approval. It does not match configuration or authentication changes, or plugin and MCP additions or removals.
 
@@ -106,8 +109,9 @@ Codex execution also depends on these layers:
 ```text
 sandbox
   + agent-sentinel.rules (prompt / forbidden)
-  + native approval → configured reviewer
   + PreToolUse (deny only)
+  + PermissionRequest (static ALLOW / DENY; otherwise defer)
+  + native approval → configured reviewer when deferred
 ```
 
 Compound Bash commands are split into segments at pipes, `&&`, `;`, substitutions, and similar boundaries. The evaluator applies its strictest classification across all segments. For supported Codex tool calls, the hook emits DENY for matching static DENY rules and for ASK variants it cannot delegate to a generated prompt rule.
@@ -130,7 +134,7 @@ The local evaluator classifies recursive deletion of paths that do not exist yet
 
 The Claude host uses the Claude Agent SDK as its judge backend. Timeouts, SDK errors, and turn-limit exhaustion fall back to ASK. Reaching the judge without the Claude extra installed also returns the SDK import error as ASK.
 
-The Codex path does not invoke the Claude SDK or this LLM judge. Codex routes approval requests it creates to the configured reviewer. No reviewer is involved when Codex creates no approval request, and the hook emits no output for operations that match no static rule.
+The Codex path does not invoke the Claude SDK or this LLM judge. It uses the same static ALLOW rules as Claude Code only when Codex creates a Bash approval request. Codex routes requests left undecided by the PermissionRequest hook to the configured reviewer. No reviewer is involved when Codex creates no approval request.
 
 ## CLI
 
@@ -140,9 +144,10 @@ Inspect a command without invoking the hook:
 agent-sentinel --test "git status"
 agent-sentinel --test "terraform apply"
 agent-sentinel --host codex --test "terraform apply"
+agent-sentinel --host codex --event PermissionRequest --test "git status"
 ```
 
-`--host codex` uses the same deny-only evaluation as the actual Codex hook. Commands that the hook does not block are displayed as `DEFER [CODEX_RULE_PROMPT]` when a generated prefix rule matches, or `DEFER [CODEX_NATIVE]` otherwise. These labels describe agent-sentinel's routing prediction, not a Codex approval result. The Claude Agent SDK is not invoked.
+`--host codex` defaults to the PreToolUse deny-only evaluation. `--event PermissionRequest` evaluates static ALLOW at an approval boundary. Commands that PreToolUse does not block are displayed as `DEFER [CODEX_RULE_PROMPT]` when a generated prefix rule matches, or `DEFER [CODEX_NATIVE]` otherwise. These labels describe agent-sentinel's routing prediction, not a Codex approval result. The Claude Agent SDK is not invoked.
 
 Inspect rules and logs with the following commands:
 
@@ -171,7 +176,7 @@ agent-sentinel log annotate EVENT_ID --label missed-deny
 agent-sentinel log annotate EVENT_ID --label expected-prompt
 ```
 
-When the Codex hook delegates a decision, it records `defer`, distinguishing commands that match generated prompt rules as `CODEX_RULE_PROMPT` and other decisions as `CODEX_NATIVE`. These are predictions from the local classifier. At the time a PreToolUse event is recorded, the hook has not observed whether Codex accepted its output, created an approval request, or ran the tool, so every `observed_outcome`, including DENY, is `unknown`. `expected_action` is a policy expectation, not a host observation.
+When the Codex PreToolUse hook delegates a decision, it records `defer`, distinguishing commands that match generated prompt rules as `CODEX_RULE_PROMPT` and other decisions as `CODEX_NATIVE`. PermissionRequest records `allow`, `deny`, or `defer` with its event phase. Hook logs cannot confirm whether Codex honored the response or ran the tool, so every `observed_outcome` remains `unknown`. `expected_action` is a policy expectation, not a host observation.
 
 ## Development
 

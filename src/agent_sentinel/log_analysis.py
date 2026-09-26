@@ -29,11 +29,12 @@ def replay_event(event: dict[str, Any]) -> dict[str, Any]:
         "cwd": event.get("cwd", "."),
     }
     host = event.get("host", "claude")
-    result = (
-        evaluator.evaluate_codex(hook_input)
-        if host == "codex"
-        else evaluator.evaluate(hook_input, judge="disabled")
-    )
+    if host == "codex" and hook_input["hook_event_name"] == "PermissionRequest":
+        result = evaluator.evaluate_codex_permission_request(hook_input)
+    elif host == "codex":
+        result = evaluator.evaluate_codex(hook_input)
+    else:
+        result = evaluator.evaluate(hook_input, judge="disabled")
     if result is None:
         if host == "codex":
             owner, stage, reason = evaluator.codex_defer_target(hook_input)
@@ -166,7 +167,8 @@ def _audit_evaluation(event: dict[str, Any]) -> list[dict[str, str]]:
                 )
             )
         if (
-            segment.get("verdict") == "ask"
+            event.get("phase", "PreToolUse") == "PreToolUse"
+            and segment.get("verdict") == "ask"
             and segment.get("has_execpolicy_rule")
             and not segment.get("execpolicy_covered")
             and recorded.get("result") != "deny"

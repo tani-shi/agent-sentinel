@@ -28,7 +28,7 @@ def test_install_preserves_existing_hooks(tmp_path):
     config = json.loads(path.read_text())
     assert config["description"] == "User hooks"
     assert len(config["hooks"]["PreToolUse"]) == 2
-    assert set(config["hooks"]) == {"PreToolUse"}
+    assert set(config["hooks"]) == {"PreToolUse", "PermissionRequest"}
     assert path.with_suffix(".json.bak").exists()
     assert (tmp_path / "rules" / "agent-sentinel.rules").exists()
 
@@ -40,6 +40,7 @@ def test_install_is_idempotent(tmp_path):
     assert "already up to date" in message
     assert "Trust the agent-sentinel hook" not in message
     assert len(json.loads(path.read_text())["hooks"]["PreToolUse"]) == 1
+    assert len(json.loads(path.read_text())["hooks"]["PermissionRequest"]) == 1
 
 
 def test_install_replaces_stale_matcher(tmp_path):
