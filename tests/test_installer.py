@@ -90,13 +90,14 @@ class TestInstall:
         assert not any(e.startswith("MultiEdit(") for e in settings["permissions"]["deny"])
         assert "MultiEdit" not in settings["permissions"]["allow"]
 
-    def test_install_strips_stale_write_deny_but_keeps_allow(self, settings_file):
+    def test_install_strips_stale_write_deny_and_retired_entries(self, settings_file):
         settings_file.write_text(
             json.dumps(
                 {
                     "permissions": {
                         "deny": ["Write(**/.env)", "Write(**/.ssh/**)"],
-                        "allow": ["Write"],
+                        "allow": ["Read", "Write", "Edit"],
+                        "ask": ["mcp__claude_ai_Notion__notion-create-*"],
                     }
                 }
             )
@@ -105,7 +106,8 @@ class TestInstall:
 
         settings = json.loads(settings_file.read_text())
         assert not any(e.startswith("Write(") for e in settings["permissions"]["deny"])
-        assert "Write" in settings["permissions"]["allow"]
+        assert not {"Read", "Write", "Edit"} & set(settings["permissions"]["allow"])
+        assert "ask" not in settings["permissions"]
 
     def test_install_strips_retired_env_glob_deny(self, settings_file):
         settings_file.write_text(
@@ -173,7 +175,7 @@ class TestInstallPermissions:
         install(settings_file)
         settings = json.loads(settings_file.read_text())
         assert settings["permissions"]["allow"].count(managed["allow"][0]) == 1
-        assert settings["permissions"]["ask"].count(managed["ask"][0]) == 1
+        assert settings["permissions"]["deny"].count(managed["deny"][0]) == 1
 
     def test_install_preserves_user_permissions(self, settings_file):
         settings_file.write_text(
@@ -311,8 +313,6 @@ class TestUninstall:
             assert entry not in perms.get("deny", [])
         for entry in managed["allow"]:
             assert entry not in perms.get("allow", [])
-        for entry in managed["ask"]:
-            assert entry not in perms.get("ask", [])
 
     def test_uninstall_removes_stale_write_deny(self, settings_file):
         # A legacy install left Write(...) deny globs the current managed set no

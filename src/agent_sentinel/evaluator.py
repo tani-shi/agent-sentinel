@@ -1,11 +1,16 @@
-"""Multi-stage evaluation engine for tool permission requests."""
+"""Multi-stage evaluation engine for tool permission requests.
+
+The hook owns only deterministic verdicts: DENY for what no review may approve,
+and ALLOW for what needs none, which saves the host reviewer's tokens.
+Everything else defers to the host's own review — the Claude Code auto mode
+classifier or the Codex approval flow.
+"""
 
 from __future__ import annotations
 
 from fnmatch import fnmatch
 from typing import Any
 
-from agent_sentinel import codex_policy, llm_judge
 from agent_sentinel import rule_engine as rules
 from agent_sentinel.patch_paths import extract_paths
 
@@ -25,25 +30,13 @@ AUTO_ALLOW_TOOLS = {
     "mcp__claude_ai_Notion__notion-download-*",
     "mcp__claude_ai_Slack__slack_read_*",
     "mcp__claude_ai_Slack__slack_search_*",
-    "mcp__plugin_context7_context7__*",
-}
-
-# Tools that have external impact and require user confirmation.
-# Supports fnmatch glob patterns (e.g. "mcp__*__notion-create-*").
-ASK_TOOLS = {
-    "mcp__claude_ai_Slack__slack_send_message",
-    "mcp__claude_ai_Slack__slack_send_message_draft",
-    "mcp__claude_ai_Slack__slack_schedule_message",
-    "mcp__claude_ai_Slack__slack_create_canvas",
-    "mcp__claude_ai_Slack__slack_update_canvas",
-    "mcp__claude_ai_Notion__notion-create-*",
-    "mcp__claude_ai_Notion__notion-update-*",
-    "mcp__claude_ai_Notion__notion-duplicate-*",
-    "mcp__claude_ai_Notion__notion-move-*",
 }
 
 # File tools evaluated through sensitive path deny rules.
 FILE_TOOLS = {"Read", "Write", "Edit"}
+
+# Tools whose `command` runs through the shell under the Bash rules.
+SHELL_TOOLS = {"Bash", "Monitor"}
 
 
 def _matches(tool_name: str, patterns: set[str]) -> bool:
@@ -51,60 +44,37 @@ def _matches(tool_name: str, patterns: set[str]) -> bool:
     return any(fnmatch(tool_name, pattern) for pattern in patterns)
 
 
-def evaluate(hook_input: dict[str, Any], *, judge: str = "claude") -> tuple[str, str, str] | None:
-    """Evaluate a hook input through the multi-stage system.
+def evaluate(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
+    """Evaluate a Claude Code hook input.
 
-    Returns:
-        (decision, reason, stage) or None for passthrough (unknown tools)
+    Returns (decision, reason, stage) with decision "allow", "deny", or
+    "defer", or None for tools the policy does not cover.
     """
     tool_name = hook_input.get("tool_name", "")
     tool_input = hook_input.get("tool_input", {})
 
-    if tool_name == "Bash":
-        return _evaluate_bash(tool_input, hook_input, judge=judge)
+    if tool_name in SHELL_TOOLS:
+        # A Monitor WebSocket watch carries `ws` instead of a command.
+        if tool_name == "Monitor" and "command" not in tool_input:
+            return None
+        return _evaluate_bash(tool_input, hook_input)
     elif tool_name == "apply_patch":
         return _evaluate_patch(tool_input, hook_input)
     elif tool_name in FILE_TOOLS:
         return _evaluate_file(tool_input)
     elif _matches(tool_name, AUTO_ALLOW_TOOLS):
         return "allow", f"Auto-allowed tool: {tool_name}", "AUTO_ALLOW"
-    elif _matches(tool_name, ASK_TOOLS):
-        return "ask", f"External impact tool requires confirmation: {tool_name}", "TOOL_ASK"
-    else:
-        # Unknown tool: passthrough
-        return None
+    return None
 
 
 def evaluate_codex(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
-    """Evaluate only policy decisions that Codex cannot safely own."""
+    """Evaluate the DENY decisions Codex PreToolUse can enforce."""
     tool_name = hook_input.get("tool_name", "")
     tool_input = hook_input.get("tool_input", {})
 
     if tool_name == "Bash":
-        command = tool_input.get("command", "")
-        cwd = hook_input.get("cwd", ".")
-        result = rules.evaluate_bash_command(command, cwd)
-        if result.decision == "deny":
-            return "deny", result.reason, "RULE_DENY"
-        for ask in rules.effective_ask_matches(command, cwd):
-            if ask.name in codex_policy.HOOK_DENY_ASK_REASONS:
-                return (
-                    "deny",
-                    codex_policy.HOOK_DENY_ASK_REASONS[ask.name],
-                    "CODEX_RULE_DENY",
-                )
-            if codex_policy.has_prompt_rule(ask.name) and not codex_policy.prompt_covers(
-                ask.name, ask.segment
-            ):
-                return (
-                    "deny",
-                    "This command form cannot be represented by Codex execution rules. "
-                    "Run it yourself after reviewing it.",
-                    "CODEX_RULE_DENY",
-                )
-        return None
-
-    if tool_name == "apply_patch":
+        result = _evaluate_bash(tool_input, hook_input)
+    elif tool_name == "apply_patch":
         result = _evaluate_patch(tool_input, hook_input)
     elif tool_name in FILE_TOOLS:
         result = _evaluate_file(tool_input)
@@ -119,16 +89,11 @@ def evaluate_codex_permission_request(
     """Approve only Bash commands classified ALLOW by the shared static rules."""
     if hook_input.get("tool_name") != "Bash":
         return None
-    blocked = evaluate_codex(hook_input)
-    if blocked is not None:
-        return blocked
     command = hook_input.get("tool_input", {}).get("command")
     if not isinstance(command, str) or not command.strip():
         return None
-    result = rules.evaluate_bash_command(command, hook_input.get("cwd", "."))
-    if result.decision == "allow":
-        return "allow", result.reason, "RULE_ALLOW"
-    return None
+    result = _evaluate_bash({"command": command}, hook_input)
+    return result if result[0] in {"allow", "deny"} else None
 
 
 def codex_defer_target(hook_input: dict[str, Any]) -> tuple[str, str, str]:
@@ -139,63 +104,43 @@ def codex_defer_target(hook_input: dict[str, Any]) -> tuple[str, str, str]:
             "CODEX_PERMISSION_DEFER",
             "No static ALLOW; Codex approval flow applies",
         )
-    if hook_input.get("tool_name") == "Bash":
-        command = hook_input.get("tool_input", {}).get("command", "")
-        cwd = hook_input.get("cwd", ".")
-        for ask in rules.effective_ask_matches(command, cwd):
-            if codex_policy.prompt_covers(ask.name, ask.segment):
-                return (
-                    "execpolicy",
-                    "CODEX_RULE_PROMPT",
-                    "No hook denial; Codex execution rules apply",
-                )
     return "native", "CODEX_NATIVE", "No hook denial; Codex native policy applies"
 
 
-def _evaluate_bash(
-    tool_input: dict[str, Any], hook_input: dict[str, Any], *, judge: str
-) -> tuple[str, str, str]:
-    """Evaluate a Bash command via segment-aware rule matching.
+def _evaluate_bash(tool_input: dict[str, Any], hook_input: dict[str, Any]) -> tuple[str, str, str]:
+    """Evaluate a shell command via segment-aware rule matching.
 
     The command is split into individual segments by an in-house splitter
     (so compound commands using ``&&``, ``||``, ``;``, ``|``, ``$()``,
     ``<()``, etc. are evaluated per-segment) and each segment is checked
-    against DENY -> ASK -> interpreter-escalation -> ALLOW with strictest-wins
-    aggregation. A segment matched by no rule falls through to the LLM judge;
-    an out-of-project script file falls through to the read judge, which is
-    granted read access to that file.
+    against DENY -> deletion scope -> DEFER -> ALLOW with strictest-wins
+    aggregation.
     """
     command = tool_input.get("command", "")
     cwd = hook_input.get("cwd", ".")
 
-    decision, reason, read_dirs = rules.evaluate_bash_command(command, cwd)
+    decision, reason, matched = rules.evaluate_bash_command(command, cwd)
     if decision == "deny":
         return "deny", reason, "RULE_DENY"
-    if decision == "ask":
-        return "ask", reason, "RULE_ASK"
     if decision == "allow":
         return "allow", reason, "RULE_ALLOW"
-
-    if judge == "disabled":
-        return "ask", "No static rule matched and the LLM judge is disabled", "JUDGE_DISABLED"
-
-    if decision == "llm_read":
-        llm_decision, llm_reason = llm_judge.evaluate(command, cwd, read_dirs=read_dirs)
-        return llm_decision, llm_reason, "LLM_JUDGE_READ"
-
-    llm_decision, llm_reason = llm_judge.evaluate(command, cwd)
-    return llm_decision, llm_reason, "LLM_JUDGE"
+    return "defer", reason, "RULE_DEFER" if matched else "NO_RULE"
 
 
 def _evaluate_file(tool_input: dict[str, Any]) -> tuple[str, str, str]:
-    """Evaluate a file tool (Read/Write/Edit) through sensitive path rules."""
+    """Evaluate a file tool (Read/Write/Edit) through sensitive path rules.
+
+    A path no rule protects defers rather than allows: the host approves
+    working-directory reads and edits without review anyway, and an allow
+    would also approve writes outside it and to the host's protected paths.
+    """
     file_path = tool_input.get("file_path", "")
 
     deny_match = rules.match_sensitive_path(file_path)
     if deny_match:
         return "deny", f"Blocked by sensitive path rule: {deny_match.name}", "RULE_DENY"
 
-    return "allow", "No sensitive path rule matched", "RULE_ALLOW"
+    return "defer", "No sensitive path rule matched", "NO_RULE"
 
 
 def _evaluate_patch(

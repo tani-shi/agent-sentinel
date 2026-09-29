@@ -1,38 +1,43 @@
 # agent-sentinel
 
-agent-sentinel is a safety guard for tool calls made by Claude Code and Codex. It classifies Bash commands and file operations with shared static rules, blocks dangerous operations such as reading credentials or deleting tracked files, and routes uncertain operations to an approval step.
+agent-sentinel is a safety guard for tool calls made by Claude Code and Codex. It classifies Bash commands and file operations with shared static rules into three outcomes:
+
+- **DENY**: operations no review may approve, such as reading credentials or deleting tracked files.
+- **ALLOW**: operations whose effect the command line itself bounds. The hook approves them so the host reviewer spends no tokens on them.
+- **DEFER**: everything else. The hook stays silent and the host's own review decides: the Claude Code [auto mode](https://code.claude.com/docs/en/permission-modes) classifier, or Codex [auto-review](https://learn.chatgpt.com/docs/sandboxing/auto-review).
 
 ```console
 $ agent-sentinel --test "git status"
 ALLOW [RULE_ALLOW]: Allowed by rules: git-status
 $ agent-sentinel --test "terraform apply"
-ASK [RULE_ASK]: Matched ask rule: terraform
+DEFER [RULE_DEFER]: Matched defer rule: terraform
 ```
 
-The hook is an additional guardrail, not a replacement for the host sandbox or permission system.
+The hook is an additional guardrail, not a replacement for the host sandbox or permission system. It is designed for hosts whose deferred calls reach an automated reviewer.
 
 ## How it works
 
-agent-sentinel plugs into each host through the extension points that host provides.
-
 | Capability | Claude Code | Codex |
 |---|---|---|
-| Bash | Static ALLOW / ASK / DENY rules, then an LLM judge | PreToolUse DENY, PermissionRequest ALLOW, and execution-rule `prompt` / `forbidden` |
-| File operations | Read / Write / Edit | `apply_patch` |
+| Bash | PreToolUse DENY / ALLOW; `Monitor` commands too | PreToolUse DENY, PermissionRequest ALLOW, execution-rule `forbidden` |
+| File operations | Read / Write / Edit: DENY for sensitive paths, otherwise DEFER | `apply_patch`: DENY for sensitive paths |
 | Sensitive paths | Hook and `permissions.deny` | Hook inspection of `apply_patch` |
-| ASK | `ask` from PreToolUse | Generated `prompt` execution rules, or native Codex policy |
-| Semantic decisions | Claude Agent SDK | The configured Codex reviewer, when an approval request occurs |
+| Deferred calls | Auto mode classifier (a prompt in `default` mode) | Configured `approvals_reviewer` |
 | Installation target | `~/.claude/settings.json` | `~/.codex/hooks.json` and `~/.codex/rules/agent-sentinel.rules` |
 
-### Claude Code
-
-The PreToolUse hook evaluates each tool call in this order and returns the first decision:
+Each Bash segment is evaluated in this order, and the strictest outcome across segments applies (DENY > DEFER > ALLOW):
 
 ```text
-host JSON → RULE_DENY → deletion scope → RULE_ASK → RULE_ALLOW → LLM_JUDGE
+RULE_DENY → deletion scope → RULE_DEFER → RULE_ALLOW → otherwise DEFER
 ```
 
 "Deletion scope" is the recursive-deletion check described in [Recursive deletion](#recursive-deletion).
+
+### Claude Code
+
+- A hook `allow` skips the permission prompt, which in auto mode includes the classifier review. Allow rules are therefore limited to commands that do not run arbitrary code; interpreters, package scripts, `make`, and test runners defer.
+- Deferred calls produce no hook output and go through Claude Code's permission flow: the classifier in auto mode, a prompt in `default` mode, and a denial where no prompt can be shown, such as `dontAsk` mode.
+- File tools defer outside sensitive paths: Claude Code approves working-directory reads and edits itself, and an allow would also approve writes outside them and to its protected paths.
 
 ### Codex
 
@@ -40,29 +45,21 @@ Codex execution passes through several layers:
 
 ```text
 sandbox
-  + agent-sentinel.rules (prompt / forbidden)
+  + agent-sentinel.rules (forbidden)
   + PreToolUse (deny only)
   + PermissionRequest (static ALLOW / DENY; otherwise defer)
   + native approval → configured reviewer when deferred
 ```
 
-- **Execution rules**: agent-sentinel generates `agent-sentinel.rules` with only `prompt` and `forbidden` decisions for ASK rules that can be expressed as command prefixes. It leaves `~/.codex/rules/default.rules` untouched.
-- **PreToolUse**: Codex PreToolUse cannot request approval with `ask`, so the hook emits only deterministic DENY decisions. It denies matching static DENY rules and ASK variants that a generated prefix rule cannot express. Other commands are deferred.
-- **PermissionRequest**: When Codex creates a Bash approval request, agent-sentinel evaluates the shared static rules in DENY → ASK → ALLOW order. It approves ALLOW commands, repeats PreToolUse denials as a fallback, and defers everything else to Codex's normal approval flow. With `approvals_reviewer = "auto_review"`, deferred requests reach the reviewer agent.
-
-The Codex path never invokes the Claude Agent SDK.
+- **Execution rules**: `agent-sentinel.rules` contains only `forbidden` rules mirroring DENY rules that a command prefix can express, so they hold even when hooks are disabled. `~/.codex/rules/default.rules` is left untouched.
+- **PreToolUse**: emits only DENY decisions; everything else is deferred.
+- **PermissionRequest**: when Codex creates a Bash approval request, approves ALLOW commands, repeats DENY as a fallback, and defers everything else to Codex's approval flow. With `approvals_reviewer = "auto_review"`, deferred requests reach the reviewer agent.
 
 ### Codex limitations
 
-- A matching rule or a deferred PreToolUse result does not mean Codex created an approval request. Operations contained within the sandbox may run without any approval or review.
+- A deferred PreToolUse result does not mean Codex created an approval request. Operations contained within the sandbox may run without any approval or review, so an ALLOW saves reviewer tokens only for requests that leave the sandbox.
 - PermissionRequest does not identify why Codex requested approval, so an agent-sentinel ALLOW can also approve a Bash request raised by another Codex policy layer.
 - PermissionRequest covers Bash only. `apply_patch` approval requests remain with Codex.
-- Some ASK operations cannot keep their existing read/no-prompt behavior under a prefix rule, so agent-sentinel generates no rule for them and delegates them to native Codex policy. Examples include deployment, make targets, HTTP or cloud mutations, force pushes to branches other than main/master, and remote branch deletion.
-- Three high-risk ASK patterns are denied outright because Codex cannot prompt for them from the hook:
-  - Recursive deletion whose scope cannot be determined
-  - `git restore` that overwrites the worktree
-  - Forced `git switch` that discards changes
-- Some rules use `prompt` for the ordinary form and hook DENY for variants that prefixes cannot express. In an [observed Codex GUI 26.803.81509 run](https://github.com/tani-shi/agent-sentinel/issues/22#issuecomment-5299930656), the hook blocked such a variant before an approval dialog appeared.
 - Tools that bypass the local function-tool hook path, including Hosted WebSearch, are not inspected.
 
 ## Installation
@@ -74,13 +71,14 @@ git clone https://github.com/tani-shi/agent-sentinel.git
 cd agent-sentinel
 ```
 
-| Target | Commands |
-|---|---|
-| Claude Code (includes the LLM judge) | `uv tool install '.[claude]'`<br>`agent-sentinel install --target claude` |
-| Codex only (no Claude Agent SDK needed) | `uv tool install .`<br>`agent-sentinel install --target codex` |
-| Both | `uv tool install '.[claude]'`<br>`agent-sentinel install --target all` |
+```bash
+uv tool install .
+agent-sentinel install --target claude   # or codex, all
+```
 
-The installers merge their entries into existing configuration without replacing unrelated entries and save a `.bak` file beside each changed target. The Claude Code installer also writes `permissions.deny` entries for sensitive paths. Use `--path FILE` to override the host configuration path.
+The installers merge their entries into existing configuration without replacing unrelated entries and save a `.bak` file beside each changed target. The Claude Code installer also writes `permissions.deny` entries for sensitive paths, and removes the `Read` / `Write` / `Edit` allow entries and the MCP `ask` entries that earlier versions wrote. Use `--path FILE` to override the host configuration path.
+
+The Claude Code hook lives in user settings, which cloud sessions do not read.
 
 Uninstalling removes agent-sentinel's hooks and its dedicated rules file while preserving other hooks and `default.rules`:
 
@@ -112,22 +110,22 @@ Set `approvals_reviewer = "user"` to send deferred requests to a person instead.
 agent-sentinel does not rewrite `config.toml`, but the installer warns about settings that weaken enforcement:
 
 - `features.hooks = false`: Hook DENY decisions do not run. If the canonical key is absent, the legacy `features.codex_hooks = false` also triggers the warning.
-- `approval_policy = "never"`: Approval requests are disabled, so native approvals and auto-review are unavailable. In an [observed Codex GUI 26.803.81509 run](https://github.com/tani-shi/agent-sentinel/issues/22#issuecomment-5300085004), a command matching a generated `prompt` rule ran without approval. agent-sentinel cannot guarantee ASK enforcement with this setting.
+- `approval_policy = "never"`: Approval requests are disabled, so deferred commands run without auto-review.
 
 Official references:
 
 - Codex: [Configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference), [Rules](https://learn.chatgpt.com/docs/agent-configuration/rules), [Agent approvals & security](https://learn.chatgpt.com/docs/agent-approvals-security), [Auto-review](https://learn.chatgpt.com/docs/sandboxing/auto-review), [Hooks](https://learn.chatgpt.com/docs/hooks)
-- Claude Code: [Hooks reference](https://code.claude.com/docs/en/hooks), [Permissions guide](https://code.claude.com/docs/en/permissions)
+- Claude Code: [Hooks reference](https://code.claude.com/docs/en/hooks), [Permissions guide](https://code.claude.com/docs/en/permissions), [Permission modes](https://code.claude.com/docs/en/permission-modes)
 
 ## Rules
 
 Both hosts share these rule files:
 
 - [`deny.toml`](src/agent_sentinel/rules/deny.toml)
-- [`ask.toml`](src/agent_sentinel/rules/ask.toml)
+- [`defer.toml`](src/agent_sentinel/rules/defer.toml): commands that must reach the host reviewer even though an allow rule would match, such as `git reset --hard` under `git-local-ops`, and every code-execution command
 - [`allow.toml`](src/agent_sentinel/rules/allow.toml)
 
-Compound Bash commands are split into segments at pipes, `&&`, `;`, substitutions, and similar boundaries. The strictest classification across all segments applies.
+Compound Bash commands are split into segments at pipes, `&&`, `;`, substitutions, and similar boundaries, and `bash -c` scripts are evaluated by their inner commands. The strictest classification across all segments applies. Unparseable commands defer unless a deny rule matches.
 
 ### Sensitive paths
 
@@ -142,19 +140,15 @@ The Claude Code installer's `permissions.deny` entries are enforced by the host,
 | Paths that do not exist yet or are ignored by Git | ALLOW |
 | Tracked paths | DENY, suggesting `git rm -r` |
 | Untracked paths | DENY, suggesting `trash` |
-| Unresolvable variables or globs, or targets outside the workspace | ASK on Claude Code, DENY on Codex |
+| Unresolvable variables or globs, or targets outside the workspace | DENY |
 
-## LLM judge
-
-On Claude Code, Bash commands that match no static rule go to an LLM judge backed by the Claude Agent SDK. Timeouts, SDK errors, turn-limit exhaustion, and a missing Claude extra all fall back to ASK.
-
-To skip the judge and return ASK for unmatched commands, add `--judge disabled` to the hook command (`agent-sentinel --host claude --judge disabled`). Codex defaults to `disabled`; its semantic decisions come from the configured Codex reviewer.
+`git restore` that overwrites the worktree and forced `git switch` are also denied: a reviewer cannot recover the uncommitted work they discard.
 
 ## CLI
 
 ### Test a command
 
-Evaluate a command with synthetic hook input, without running the hook. The LLM judge is not invoked for `--host codex`.
+Evaluate a command with synthetic hook input, without running the hook.
 
 ```bash
 agent-sentinel --test "git status"
@@ -162,25 +156,22 @@ agent-sentinel --host codex --test "terraform apply"
 agent-sentinel --host codex --event PermissionRequest --test "git status"
 ```
 
-`--host codex` evaluates PreToolUse by default; `--event PermissionRequest` evaluates the approval boundary. Commands that Codex PreToolUse does not block are shown as one of these routing predictions, not Codex approval results:
-
-- `DEFER [CODEX_RULE_PROMPT]`: a generated prefix rule matches, so Codex execution rules apply.
-- `DEFER [CODEX_NATIVE]`: no generated rule matches, so native Codex policy applies.
+`--host codex` evaluates PreToolUse by default; `--event PermissionRequest` evaluates the approval boundary. Commands that Codex PreToolUse does not block are shown as `DEFER [CODEX_NATIVE]`, a routing prediction rather than a Codex approval result.
 
 When running as a hook, add `--explain` to the hook command to print each decision and reason to stderr.
 
 ### Inspect rules and logs
 
 ```bash
-agent-sentinel rules [--kind deny|ask|allow] [--type Bash|sensitive-path] [--json]
+agent-sentinel rules [--kind deny|defer|allow] [--type Bash|sensitive-path] [--json]
 agent-sentinel log [-n 20] [--decision allow|deny|ask|defer] [--stage STAGE] [--since 30d] [--tail] [-f] [--json]
 agent-sentinel log --path
 agent-sentinel audit [--since 7d] [--json]
 agent-sentinel replay [--since 30d | --event EVENT_ID] [--json]
 ```
 
-- `audit` detects inconsistencies between logged DENY verdicts and hook results, ASK classifications without matching generated execution rules, evaluation exceptions, installed Codex policy drift, and differences from the current evaluator. It cannot determine whether Codex executed a tool or displayed an approval UI.
-- `replay` re-evaluates stored inputs with the current evaluator without executing anything or calling the LLM judge. Events previously decided by the LLM judge that still match no static rule are reported as incomparable.
+- `audit` detects inconsistencies between logged DENY verdicts and hook results, evaluation exceptions, installed Codex policy drift, and differences from the current evaluator. It cannot determine whether the host executed a tool or displayed an approval UI.
+- `replay` re-evaluates stored inputs with the current evaluator without executing anything. Events an earlier version decided with its LLM judge are reported as incomparable.
 
 ### Annotate decisions
 
@@ -202,11 +193,11 @@ Each evaluation event records:
 
 - A unique `event_id` and an input SHA-256 hash for matching identical inputs
 - The raw and normalized command, every compound-command segment, and normalization steps
-- Matched rules and whether the command matches a generated Codex execution rule
+- Matched rules
 - Hashes of the package, rules, and hook definitions. Hook definitions and Codex execution rules are hashed both as expected and as read from the installation target; `*_matches` fields report drift.
 - `host`: `claude` or `codex`
-- `owner`: `hook` when the hook decided, or the expected next policy layer for a deferred decision (`execpolicy` for generated execution rules, `native` for native Codex policy)
-- `decision`: Codex PreToolUse records `deny` or `defer`; PermissionRequest records `allow`, `deny`, or `defer` with its event phase
+- `owner`: `hook` when the hook decided, or `native` when it deferred to the host
+- `decision`: `allow`, `deny`, or `defer`; Codex PreToolUse records only `deny` or `defer`
 
 Hooks cannot observe whether the host honored a response or ran the tool, so `observed_outcome` is always `unknown` and `expected_action` is a policy expectation.
 
@@ -232,10 +223,9 @@ src/agent_sentinel/
 ├── deletion_scope.py     # Recursive-deletion classification
 ├── git_probe.py          # Read-only Git tracked/ignored queries
 ├── patch_paths.py        # apply_patch target extraction
-├── llm_judge.py          # Claude Agent SDK judge
 ├── hook_io.py            # Claude Code hook protocol
 ├── codex_io.py           # Codex hook protocol
-├── codex_policy.py       # Codex execution rules and PreToolUse boundaries
+├── codex_policy.py       # Codex forbidden execution rules
 ├── installer.py          # Claude Code installer
 ├── codex_installer.py    # Codex installer
 ├── logger.py             # Log writing

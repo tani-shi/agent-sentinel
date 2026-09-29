@@ -195,10 +195,9 @@ def _configuration_notices(path: Path) -> list[str]:
         )
     if config.get("approval_policy") == "never":
         notices.append(
-            'Warning: approval_policy="never" disables approval prompts. Codex GUI may run '
-            "commands matched by agent-sentinel prompt rules without approval, so ASK enforcement "
-            "is not guaranteed. Native approvals and auto-review are also unavailable. Use "
-            "on-request for the supported configuration."
+            'Warning: approval_policy="never" disables approval requests, so commands '
+            "agent-sentinel defers run without auto-review. Use on-request for the supported "
+            "configuration."
         )
     return notices
 

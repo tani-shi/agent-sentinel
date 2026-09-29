@@ -1,7 +1,7 @@
 """Command normalizer: strips prefix options between the program and its
 subcommand so per-command rules can match through option clutter like
-``git -c color.ui=never diff`` (which would otherwise fall through to
-LLM_JUDGE).
+``git -c color.ui=never diff`` (which would otherwise match no rule and
+defer).
 
 Used by both ``rule_engine`` (for matching) and ``analyzer`` (for grouping
 log records) so the two stay in sync.
@@ -226,15 +226,15 @@ _KNOWN_PREFIX_OPTIONS: dict[str, list[_OptionSpec]] = {
 
 
 # Leading tokens that wrap a real command without changing what it does, but
-# defeat start-anchored rules: `!` negation, loop/conditional body keywords,
+# defeat start-anchored rules: `!` negation, conditional and loop-body keywords,
 # and single-token command runners (command/exec/builtin/time/nohup). Stripping
-# them exposes the underlying command (`! kill` -> `kill`, `nohup watch` ->
-# `watch`) so anchored ASK/DENY rules match. Only argument-free runners are
+# them exposes the underlying command (`! kill` -> `kill`, `if sudo id` ->
+# `sudo id`) so anchored DEFER/DENY rules match. Only argument-free runners are
 # listed: `env`/`timeout` take their own args before the command and cannot be
-# stripped by a plain leading-token rule. Condition keywords (while/until/for/
-# if/case) and body-less keywords (done/fi/esac) are intentionally excluded.
+# stripped by a plain leading-token rule. `while`/`until` stay, for the loop
+# deny rules to see; `for`/`case` heads and `done`/`fi`/`esac` run no command.
 _WRAPPER_PREFIXES: frozenset[str] = frozenset(
-    {"!", "do", "then", "else", "command", "exec", "builtin", "time", "nohup"}
+    {"!", "if", "elif", "do", "then", "else", "command", "exec", "builtin", "time", "nohup"}
 )
 
 

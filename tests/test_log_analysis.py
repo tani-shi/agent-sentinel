@@ -30,12 +30,12 @@ def _bash_event(
     return event
 
 
-def test_replay_preserves_execpolicy_defer():
+def test_replay_preserves_native_defer():
     event = _bash_event(
         "ssh production",
         result="defer",
-        stage="CODEX_RULE_PROMPT",
-        owner="execpolicy",
+        stage="CODEX_NATIVE",
+        owner="native",
     )
 
     replay = log_analysis.replay_event(event)
@@ -43,12 +43,12 @@ def test_replay_preserves_execpolicy_defer():
     assert replay["replayable"] is True
     assert replay["changed"] is False
     assert replay["current"]["result"] == "defer"
-    assert replay["current"]["owner"] == "execpolicy"
+    assert replay["current"]["owner"] == "native"
 
 
 def test_replay_detects_changed_policy_decision():
     event = _bash_event(
-        "command git commit -m message",
+        "git restore src/app.py",
         result="defer",
         stage="CODEX_NATIVE",
         owner="native",
@@ -58,12 +58,12 @@ def test_replay_detects_changed_policy_decision():
 
     assert replay["changed"] is True
     assert replay["current"]["result"] == "deny"
-    assert replay["current"]["stage"] == "CODEX_RULE_DENY"
+    assert replay["current"]["stage"] == "RULE_DENY"
 
 
-def test_audit_detects_uncovered_ask():
+def test_audit_detects_unenforced_deny():
     event = _bash_event(
-        "command git commit -m message",
+        "git restore src/app.py",
         result="defer",
         stage="CODEX_NATIVE",
         owner="native",
@@ -72,7 +72,7 @@ def test_audit_detects_uncovered_ask():
     findings = log_analysis.audit_events([event])
 
     assert {finding["code"] for finding in findings} == {
-        "ASK_NOT_COVERED_BY_EXECPOLICY",
+        "DENY_RESULT_MISMATCH",
         "POLICY_DECISION_CHANGED",
     }
 

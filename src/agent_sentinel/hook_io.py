@@ -22,9 +22,10 @@ def write_output(
     """Write the PreToolUse JSON response to stdout.
 
     Emits {"hookSpecificOutput": {"hookEventName": "PreToolUse",
-    "permissionDecision": "allow"|"deny"|"ask", "permissionDecisionReason": "..."}}.
+    "permissionDecision": "allow"|"deny", "permissionDecisionReason": "..."}}.
 
-    "ask" requests user confirmation in interactive Claude Code sessions.
+    A deferred call writes nothing: Claude Code's own "defer" value pauses a
+    headless session instead of handing the call to its permission flow.
     This function writes a hook response; it cannot observe the host outcome.
     """
     stream = stdout if stdout is not None else sys.stdout

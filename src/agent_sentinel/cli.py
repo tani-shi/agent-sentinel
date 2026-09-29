@@ -33,11 +33,6 @@ def main(argv: list[str] | None = None) -> None:
         help="Hook protocol to use (default: claude)",
     )
     parser.add_argument(
-        "--judge",
-        choices=["claude", "disabled"],
-        help="Judge backend (default: claude for Claude, disabled for Codex)",
-    )
-    parser.add_argument(
         "--explain",
         action="store_true",
         help="Output decision reason to stderr",
@@ -74,7 +69,7 @@ def main(argv: list[str] | None = None) -> None:
     rules_parser = subparsers.add_parser("rules", help="Display all rules")
     rules_parser.add_argument(
         "--kind",
-        choices=["deny", "allow", "ask"],
+        choices=["deny", "defer", "allow"],
         help="Filter by rule kind",
     )
     rules_parser.add_argument(
@@ -163,13 +158,12 @@ def main(argv: list[str] | None = None) -> None:
         _run_replay(args)
         return
 
-    judge = args.judge or ("disabled" if args.host == "codex" else "claude")
     if args.test:
-        _run_test(args.test, host=args.host, judge=judge, explain=args.explain, event=args.event)
+        _run_test(args.test, host=args.host, explain=args.explain, event=args.event)
         return
 
     # Default: hook mode — read from stdin, evaluate, write to stdout
-    _run_hook(host=args.host, judge=judge, explain=args.explain)
+    _run_hook(host=args.host, explain=args.explain)
 
 
 def _run_install(target: str, path: Path | None) -> None:
@@ -192,7 +186,7 @@ def _run_uninstall(target: str, path: Path | None) -> None:
 
 def _run_rules(args: argparse.Namespace) -> None:
     """Handle the rules subcommand."""
-    kinds = [args.kind] if args.kind else ["deny", "allow", "ask"]
+    kinds = [args.kind] if args.kind else ["deny", "defer", "allow"]
     type_filter = args.type
 
     for kind in kinds:
@@ -255,21 +249,23 @@ def _print_rule_section(kind: str, rule_type: str, rules: list) -> None:
         print(f"  {rule.name:<{max_name}}  {rule.pattern.pattern}")
 
 
-def _evaluate_hook_input(
-    hook_input: dict, *, host: str, judge: str
-) -> tuple[str, str, str] | None:
+def _evaluate_hook_input(hook_input: dict, *, host: str) -> tuple[str, str, str] | None:
     if host == "codex":
         if hook_input.get("hook_event_name") == "PermissionRequest":
             return evaluator.evaluate_codex_permission_request(hook_input)
         return evaluator.evaluate_codex(hook_input)
-    return evaluator.evaluate(hook_input, judge=judge)
+    return evaluator.evaluate(hook_input)
+
+
+def _owner(decision: str) -> str:
+    """A defer hands the call to the host's own review."""
+    return "native" if decision == "defer" else "hook"
 
 
 def _run_test(
     command: str,
     *,
     host: str,
-    judge: str,
     explain: bool = False,
     event: str = "PreToolUse",
 ) -> None:
@@ -285,7 +281,7 @@ def _run_test(
     }
 
     t0 = time.monotonic()
-    result = _evaluate_hook_input(hook_input, host=host, judge=judge)
+    result = _evaluate_hook_input(hook_input, host=host)
     elapsed_ms = (time.monotonic() - t0) * 1000
 
     if result is None:
@@ -306,14 +302,16 @@ def _run_test(
         return
 
     decision, reason, stage = result
-    logger.log_evaluation(hook_input, decision, reason, stage, elapsed_ms, host=host, owner="hook")
+    logger.log_evaluation(
+        hook_input, decision, reason, stage, elapsed_ms, host=host, owner=_owner(decision)
+    )
     print(f"{decision.upper()} [{stage}]: {reason}")
 
     if explain:
         print(f"  Command: {command}", file=sys.stderr)
 
 
-def _run_hook(*, host: str, judge: str, explain: bool = False) -> None:
+def _run_hook(*, host: str, explain: bool = False) -> None:
     """Run in hook mode: read stdin JSON, evaluate, write stdout JSON."""
     try:
         hook_input = hook_io.read_input()
@@ -329,7 +327,7 @@ def _run_hook(*, host: str, judge: str, explain: bool = False) -> None:
     event = hook_input.get("hook_event_name", "PreToolUse")
     t0 = time.monotonic()
     try:
-        result = _evaluate_hook_input(hook_input, host=host, judge=judge)
+        result = _evaluate_hook_input(hook_input, host=host)
     except Exception as error:
         if host == "codex":
             elapsed_ms = (time.monotonic() - t0) * 1000
@@ -363,7 +361,9 @@ def _run_hook(*, host: str, judge: str, explain: bool = False) -> None:
         return
 
     decision, reason, stage = result
-    logger.log_evaluation(hook_input, decision, reason, stage, elapsed_ms, host=host, owner="hook")
+    logger.log_evaluation(
+        hook_input, decision, reason, stage, elapsed_ms, host=host, owner=_owner(decision)
+    )
 
     if explain:
         tool_name = hook_input.get("tool_name", "")
@@ -371,7 +371,7 @@ def _run_hook(*, host: str, judge: str, explain: bool = False) -> None:
 
     if host == "codex":
         codex_io.write_output(decision, reason, event=event)
-    else:
+    elif decision != "defer":
         hook_io.write_output(decision, reason)
 
 

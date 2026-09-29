@@ -1,67 +1,73 @@
 ---
-description: Interactively propose ALLOW/ASK rule additions for agent-sentinel from recent LLM_JUDGE log entries
+description: Interactively propose ALLOW/DEFER rule additions for agent-sentinel from recent unmatched log entries
 allowed-tools: Bash(agent-sentinel log:*), Bash(agent-sentinel rules:*), Bash(make check:*), Bash(git diff:*), Read, Edit
 ---
 
-You are helping the user maintain `allow.toml` and `ask.toml` for
+You are helping the user maintain `allow.toml` and `defer.toml` for
 agent-sentinel — the coding-agent safety hook that evaluates shell
-commands. Find commands frequently falling through to LLM_JUDGE,
-propose rules that would catch them, refine the proposals
-**interactively** with the user, and then edit the rule files (and
-tests) directly.
+commands. An ALLOW skips the host reviewer (Claude Code auto mode
+classifier, Codex auto-review) and saves its tokens; everything that
+matches no rule defers to that reviewer. Find commands that frequently
+match no rule, propose ALLOW rules for the ones that need no review,
+refine the proposals **interactively** with the user, and then edit the
+rule files (and tests) directly.
 
 ## Workflow
 
-1. Fetch recent LLM_JUDGE log records:
+1. Fetch recent log records that matched no rule:
    ```
-   agent-sentinel log --json --stage LLM_JUDGE --since 30d -n 200
+   agent-sentinel log --json --stage NO_RULE --since 30d -n 200
    ```
-   Each record has: ts, session_id, tool_name, input, cwd, decision,
-   stage, reason, elapsed_ms. The `decision` field is what the slow
-   LLM judge actually picked (allow / ask / deny) — use it as a strong
-   signal for classification.
+   Each record carries `request.command`, `cwd`, `analysis.segments`
+   (with the segments that matched nothing), and `decision`. The hook
+   never learns what the host reviewer decided, so classify by the
+   command's intent and how often it recurs.
 
 2. Fetch the existing rule sets:
    ```
    agent-sentinel rules --kind allow --json
-   agent-sentinel rules --kind ask --json
+   agent-sentinel rules --kind defer --json
    agent-sentinel rules --kind deny --json
    ```
 
 3. Group log records by *intent*, not by surface form. Examples of
    commands that should collapse to the same intent:
-   - `make test 2>&1 | tail -5` and `make test`
-   - `cd src && terraform apply` and `terraform apply` — focus on the
-     destructive segment, not the cd
+   - `gh pr view 12 --json body 2>&1 | head -5` and `gh pr view 12`
+   - `cd src && kubectl get pods` and `kubectl get pods` — focus on the
+     unmatched segment, not the cd
    - `cat foo | grep bar` and `grep bar foo`
    Examples of related commands worth one shared rule (a family):
-   - `make test`, `make test:integration`, `make test.fast` — a single
-     `make test*` family rule may cover them all.
+   - `kubectl get`, `kubectl describe`, `kubectl logs` — a single
+     read-verb family rule may cover them all.
 
-4. For each group, check whether the existing allow/ask/deny rules
+4. For each group, check whether the existing allow/defer/deny rules
    already match a representative sample. If they do, mark covered
    and skip — do NOT propose duplicates.
 
 5. For groups not covered, classify them:
-   - LLM consistently picked `allow` and the intent is read-only or a
-     pure local dev-tool invocation → ALLOW rule.
-   - LLM picked `ask`, or the intent is destructive / mutates shared
-     state / reaches outside the local machine → ASK rule.
-   - LLM picked `deny`, or the command is unambiguously dangerous →
-     surface for human review only. Do NOT auto-edit `deny.toml`.
+   - The command line itself bounds the effect — read-only, or a local
+     mutation that runs no code from arguments, project files, or
+     packages → ALLOW rule.
+   - The command runs code (interpreters, package scripts, task or test
+     runners, package executors), is destructive, mutates shared state,
+     or reaches outside the local machine → no rule; it keeps deferring.
+     Propose a DEFER rule only when an existing or proposed ALLOW rule
+     would otherwise match it.
+   - The command is unambiguously dangerous → surface for human review
+     only. Do NOT auto-edit `deny.toml`.
 
 6. Present your proposed candidates to the user as a compact table or
-   numbered list. For each row include: section (allow/ask), proposed
+   numbered list. For each row include: section (allow/defer), proposed
    `name`, proposed regex, a representative sample command, the
-   decision tally (e.g. `allow=12, ask=3`), and a one-line rationale.
+   occurrence count, and a one-line rationale.
    Also list any covered/deny-flagged groups so the user sees the full
    picture.
 
 7. **Iterate with the user.** They will say things like:
    - "drop #3" — remove that proposal
-   - "narrow #5 — only `make test:*`, not `make test.*`" — refine the regex
+   - "narrow #5 — only `kubectl get`, not `kubectl logs`" — refine the regex
    - "split #7 into two rules" — propose two `[[rules]]` entries
-   - "this should be ASK not ALLOW" — change classification
+   - "this should defer, not ALLOW" — drop it or change classification
    - "proceed" / "apply" — do the edits
    Keep iterating until the user approves. Do not edit any file until
    they say so explicitly.
@@ -70,21 +76,20 @@ tests) directly.
    `Edit` tool, inserting each new rule into the appropriate Title
    Case section:
    - ALLOW additions → `src/agent_sentinel/rules/allow.toml`
-   - ASK additions → `src/agent_sentinel/rules/ask.toml`
+   - DEFER additions → `src/agent_sentinel/rules/defer.toml`
    - Never write to `deny.toml`.
 
    Both files are organized into thematic sections marked with
    `# --- Title Case Section Name ---` headers (e.g. `# --- Git ---`,
    `# --- GitHub CLI ---`, `# --- Docker Mutations ---`,
-   `# --- Destructive File / Git / Process Operations ---`). Before
+   `# --- Code Execution ---`). Before
    editing, **read the target file** so you understand the current
    section layout. Then for each new rule:
    - **Match it to an existing section by topic.** A new `gh` read
      rule belongs under `# --- GitHub CLI ---` in allow.toml; a new
-     destructive command belongs under
+     destructive command carved out of an allow rule belongs under
      `# --- Destructive File / Git / Process Operations ---` in
-     ask.toml; a new `make` mutation target under
-     `# --- Make External-Impact Targets ---`.
+     defer.toml; a new code runner under `# --- Code Execution ---`.
    - **Insert as a new `[[rules]]` block at the end of that section**,
      immediately before the next `# --- ... ---` header (or at EOF
      for the last section). Preserve the blank-line spacing the
@@ -143,8 +148,8 @@ Each `[[rules]]` regex must:
 - Be anchored with `^` (Python `re.search` matches anywhere otherwise).
 - Use `( |$)` (with a leading space) after the head/subcommand to
   avoid prefix overlap (e.g. `git` matching `github`).
-- Be conservative — better one extra ASK classification than silently allowing
-  a risky command. When unsure, suggest ASK.
+- Be conservative — an extra host review costs tokens, while a wrong ALLOW
+  skips review entirely. When unsure, leave the command unmatched.
 - Avoid prefix-option clutter (`-c key=val`, `--no-pager`, `--silent`,
   `-q`, `-R`, `-j N` etc.). The matching engine strips known prefix
   options before testing patterns, so write rules against the
@@ -155,7 +160,7 @@ Each `[[rules]]` regex must:
 - Use ONLY the tools listed in `allowed-tools`. No other Bash
   commands; no editing of files outside
   `src/agent_sentinel/rules/allow.toml`,
-  `src/agent_sentinel/rules/ask.toml`, and `tests/test_rules.py`.
+  `src/agent_sentinel/rules/defer.toml`, and `tests/test_rules.py`.
 - Do not edit `deny.toml`. DENY changes always require manual human
   review.
 - If the user asks for something outside this workflow (refactoring,

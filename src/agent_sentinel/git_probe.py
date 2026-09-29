@@ -7,8 +7,8 @@ from functools import cache
 
 # The probe runs inside the PreToolUse hook, ahead of the user's own command. A
 # repository on a stalled network mount must not hold the hook open, so a probe
-# that misses its window is treated like any other unknown and the caller falls
-# back to asking.
+# that misses its window is treated like any other unknown, which the deletion
+# scope denies as unresolved.
 _GIT_TIMEOUT = 1.0
 
 

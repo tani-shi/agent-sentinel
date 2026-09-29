@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from agent_sentinel import codex_policy, rule_engine
+from agent_sentinel import rule_engine
 from agent_sentinel.command_normalizer import normalize_for_matching
 from agent_sentinel.patch_paths import extract_paths
 from agent_sentinel.policy_snapshot import policy_details
@@ -28,7 +28,7 @@ def build_evaluation_event(
 ) -> dict[str, Any]:
     request = _request_details(hook_input)
     analysis = _safe_analysis_details(hook_input, request)
-    reason_code = _reason_code(decision, stage, owner, analysis)
+    reason_code = _reason_code(decision, stage)
     return {
         "schema_version": LOG_SCHEMA_VERSION,
         "event_type": "evaluation",
@@ -92,7 +92,6 @@ def _analysis_details(hook_input: dict[str, Any], request: dict[str, Any]) -> di
             matched_rules = []
             if verdict.name:
                 matched_rules.append({"id": verdict.name, "effect": verdict.decision})
-            has_execpolicy_rule = bool(verdict.name and codex_policy.has_prompt_rule(verdict.name))
             segments.append(
                 {
                     "raw": segment.raw,
@@ -100,12 +99,6 @@ def _analysis_details(hook_input: dict[str, Any], request: dict[str, Any]) -> di
                     "normalization": list(segment.normalization),
                     "verdict": verdict.decision,
                     "matched_rules": matched_rules,
-                    "has_execpolicy_rule": has_execpolicy_rule,
-                    "execpolicy_covered": (
-                        codex_policy.prompt_covers(verdict.name, segment.raw)
-                        if has_execpolicy_rule
-                        else False
-                    ),
                 }
             )
         return {
@@ -135,37 +128,25 @@ def _analysis_details(hook_input: dict[str, Any], request: dict[str, Any]) -> di
     return {}
 
 
-def _reason_code(decision: str, stage: str, owner: str, analysis: dict[str, Any]) -> str:
-    if stage == "EVALUATION_ERROR":
-        return "EVALUATION_DENY_SELECTED"
-    if stage == "INPUT_DENY":
-        return "INVALID_INPUT_DENY_SELECTED"
-    if stage == "CODEX_RULE_PROMPT":
-        return "ASK_COVERED_BY_EXECPOLICY"
-    if stage == "CODEX_NATIVE":
-        return "DELEGATED_TO_NATIVE"
-    if stage == "CODEX_RULE_DENY":
-        uncovered = any(
-            segment.get("has_execpolicy_rule") and not segment.get("execpolicy_covered")
-            for segment in analysis.get("segments", [])
-        )
-        return "ASK_NOT_COVERED_BY_EXECPOLICY" if uncovered else "CODEX_RULE_DENY_SELECTED"
-    if stage == "RULE_DENY":
-        return "STATIC_DENY_MATCHED"
-    if stage == "RULE_ASK":
-        return "STATIC_ASK_MATCHED"
-    if stage == "RULE_ALLOW":
-        return "STATIC_ALLOW_MATCHED"
-    if owner == "execpolicy":
-        return "DELEGATED_TO_EXECPOLICY"
-    return stage or decision.upper()
+_REASON_CODES = {
+    "EVALUATION_ERROR": "EVALUATION_DENY_SELECTED",
+    "INPUT_DENY": "INVALID_INPUT_DENY_SELECTED",
+    "RULE_DENY": "STATIC_DENY_MATCHED",
+    "RULE_ALLOW": "STATIC_ALLOW_MATCHED",
+    "RULE_DEFER": "STATIC_DEFER_MATCHED",
+    "NO_RULE": "DELEGATED_TO_NATIVE",
+    "CODEX_NATIVE": "DELEGATED_TO_NATIVE",
+    "CODEX_PERMISSION_DEFER": "DELEGATED_TO_NATIVE",
+}
+
+
+def _reason_code(decision: str, stage: str) -> str:
+    return _REASON_CODES.get(stage) or stage or decision.upper()
 
 
 def _expected_action(decision: str, owner: str) -> str:
     if decision == "deny":
         return "block"
-    if decision == "ask" or owner == "execpolicy":
-        return "prompt"
     if decision == "allow":
         return "allow"
     return "native"

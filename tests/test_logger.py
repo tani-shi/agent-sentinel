@@ -118,24 +118,24 @@ class TestLogEvaluation:
         assert rec["request"]["file_path"] == "/tmp/output.txt"
         assert "body that must not be retained" not in serialized
 
-    def test_records_normalization_and_execpolicy_coverage(self, log_dir):
+    def test_records_normalization(self, log_dir):
         logger.log_evaluation(
             _make_hook_input("command git commit -m message"),
-            "deny",
-            "not representable",
-            "CODEX_RULE_DENY",
+            "defer",
+            "Matched defer rule: git-commit",
+            "RULE_DEFER",
             0.5,
             host="codex",
+            owner="native",
         )
 
         rec = json.loads((log_dir / logger.LOG_FILENAME).read_text())
         segment = rec["analysis"]["segments"][0]
         assert segment["normalized"] == "git commit -m message"
         assert segment["normalization"][0]["kind"] == "wrapper"
-        assert segment["matched_rules"] == [{"id": "git-commit", "effect": "ask"}]
-        assert segment["has_execpolicy_rule"] is True
-        assert segment["execpolicy_covered"] is False
-        assert rec["decision"]["reason_code"] == "ASK_NOT_COVERED_BY_EXECPOLICY"
+        assert segment["matched_rules"] == [{"id": "git-commit", "effect": "defer"}]
+        assert rec["decision"]["reason_code"] == "STATIC_DEFER_MATCHED"
+        assert rec["decision"]["expected_action"] == "native"
 
     def test_policy_fingerprint_compares_installed_codex_files(self, monkeypatch, tmp_path):
         hooks_path = tmp_path / "hooks.json"
@@ -186,9 +186,9 @@ class TestLogEvaluation:
     def test_annotation_is_append_only_and_not_an_evaluation(self, log_dir):
         event_id = logger.log_evaluation(
             _make_hook_input("git commit -m message"),
-            "ask",
+            "defer",
             "review",
-            "RULE_ASK",
+            "RULE_DEFER",
             1.0,
         )
         assert event_id is not None
