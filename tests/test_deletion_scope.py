@@ -5,7 +5,7 @@ from functools import cache
 import pytest
 
 from agent_sentinel import deletion_scope, git_probe
-from agent_sentinel.deletion_scope import classify
+from agent_sentinel.deletion_scope import UNRESOLVED_SCOPE, classify
 from agent_sentinel.rule_engine import evaluate_command
 
 
@@ -85,11 +85,11 @@ class TestTempScope:
             ("rm -rf `cat target`", {}),
         ],
     )
-    def test_unresolved_target_undecided(self, segment, assignments):
-        assert classify(segment, self.CWD, assignments) is None
+    def test_unresolved_target_denied(self, segment, assignments):
+        assert classify(segment, self.CWD, assignments) == UNRESOLVED_SCOPE
 
-    def test_one_target_outside_leaves_it_undecided(self):
-        assert classify("rm -rf /tmp/probe /usr/local", self.CWD, {}) is None
+    def test_one_target_outside_denies_all(self):
+        assert classify("rm -rf /tmp/probe /usr/local", self.CWD, {}) == UNRESOLVED_SCOPE
 
     @pytest.mark.parametrize(
         "segment",
@@ -106,8 +106,8 @@ class TestTempScope:
         assert classify("rm -rf -- /tmp/-weird", self.CWD, {}) == deletion_scope._TEMP_SCOPE
 
     @pytest.mark.parametrize("target", ["/tmp/sess-*", "/tmp/sess-*/cache", "/tmp/*/cache"])
-    def test_partial_pattern_at_the_root_undecided(self, target):
-        assert classify(f"rm -rf {target}", self.CWD, {}) is None
+    def test_partial_pattern_at_the_root_denied(self, target):
+        assert classify(f"rm -rf {target}", self.CWD, {}) == UNRESOLVED_SCOPE
 
     @pytest.mark.parametrize(
         "segment",
@@ -144,8 +144,8 @@ class TestRootTarget:
     def test_root_target_denied(self, segment):
         assert classify(segment, self.CWD, {}) == deletion_scope._ROOT_TARGET
 
-    def test_path_under_home_is_not_the_root(self):
-        assert classify("rm -rf $HOME/projects/build", self.CWD, {}) is None
+    def test_path_under_home_is_not_the_root_target(self):
+        assert classify("rm -rf $HOME/projects/build", self.CWD, {}) == UNRESOLVED_SCOPE
 
 
 class TestUnexpandedWord:
@@ -157,12 +157,12 @@ class TestUnexpandedWord:
     @pytest.mark.parametrize(
         "target", ["{src,tests}", "src/{a,b}", "/tmp/{a,b}", "*.log", "build/*"]
     )
-    def test_expanded_word_undecided(self, target):
-        assert classify(f"rm -rf {target}", self.CWD, {}) is None
+    def test_expanded_word_denied(self, target):
+        assert classify(f"rm -rf {target}", self.CWD, {}) == UNRESOLVED_SCOPE
 
     @pytest.mark.parametrize("target", ["/etc/absent-xyz", "/usr/local/absent-xyz"])
-    def test_missing_path_outside_the_working_directory_undecided(self, target):
-        assert classify(f"rm -rf {target}", self.CWD, {}) is None
+    def test_missing_path_outside_the_working_directory_denied(self, target):
+        assert classify(f"rm -rf {target}", self.CWD, {}) == UNRESOLVED_SCOPE
 
 
 class TestProjectScope:
@@ -212,28 +212,28 @@ class TestProjectScope:
     def test_untracked_path_denied(self, repo):
         assert classify("rm -rf draft", str(repo), {}) == deletion_scope._UNTRACKED_PATH
 
-    def test_glob_target_asks(self, repo):
-        assert classify("rm -rf ./*", str(repo), {}) is None
+    def test_glob_target_denied(self, repo):
+        assert classify("rm -rf ./*", str(repo), {}) == UNRESOLVED_SCOPE
 
-    def test_declined_probe_asks(self, repo, monkeypatch):
+    def test_declined_probe_denied(self, repo, monkeypatch):
         # A probe that never ran must not read as "not tracked", which would let
         # an ignore rule over the same path answer allow.
         monkeypatch.setattr(git_probe, "_git", lambda cwd, *args: None)
         git_probe.reset_probes()
-        assert classify("rm -rf build", str(repo), {}) is None
+        assert classify("rm -rf build", str(repo), {}) == UNRESOLVED_SCOPE
 
-    def test_outside_repository_asks(self, tmp_path, no_temp_roots):
+    def test_outside_repository_denied(self, tmp_path, no_temp_roots):
         (tmp_path / "data").mkdir()
-        assert classify("rm -rf data", str(tmp_path), {}) is None
+        assert classify("rm -rf data", str(tmp_path), {}) == UNRESOLVED_SCOPE
 
     @pytest.mark.parametrize("command", ["git rm -r src", "trash draft"])
-    def test_guided_alternative_never_asks(self, command, repo):
-        # The tracked and untracked deny reasons send the user to these; an ask
+    def test_guided_alternative_allowed(self, command, repo):
+        # The tracked and untracked deny reasons send the user to these; a defer
         # rule added over either would strand that guidance.
         assert evaluate_command(command, str(repo))[0] == "allow", command
 
-    def test_tracked_path_wins_over_scratch_sibling(self, repo):
-        result = evaluate_command(f"rm -rf /tmp/probe && rm -rf {repo}/src", str(repo))
+    def test_tracked_path_wins_over_allowed_sibling(self, repo):
+        result = evaluate_command(f"rm -rf {repo}/absent && rm -rf {repo}/src", str(repo))
         assert result[0] == "deny"
         assert "git rm -r" in result[1]
 
@@ -258,7 +258,7 @@ class TestWiredIntoEvaluation:
         ],
     )
     def test_contested_assignment_resolves_to_nothing(self, command):
-        assert evaluate_command(command, self.CWD)[0] == "ask", command
+        assert evaluate_command(command, self.CWD)[0] == "deny", command
 
     def test_repeated_identical_assignment_still_resolves(self):
         decision, _ = evaluate_command("S=/tmp/probe; S=/tmp/probe; rm -rf $S", self.CWD)
@@ -266,7 +266,7 @@ class TestWiredIntoEvaluation:
 
     def test_assignment_after_the_deletion_is_not_used(self):
         decision, _ = evaluate_command("rm -rf $S; S=/tmp/probe", self.CWD)
-        assert decision == "ask"
+        assert decision == "deny"
 
     def test_quoted_assignment_value_resolved(self):
         decision, _ = evaluate_command('S="/tmp/probe"; rm -rf "$S"/sub', self.CWD)
@@ -274,7 +274,7 @@ class TestWiredIntoEvaluation:
 
     def test_command_substitution_value_not_used(self):
         decision, _ = evaluate_command("S=$(mktemp -d); rm -rf $S", self.CWD)
-        assert decision == "ask"
+        assert decision == "deny"
 
     def test_root_deletion_still_denied(self):
         assert evaluate_command("S=/tmp/probe; rm -rf /", self.CWD)[0] == "deny"
@@ -284,8 +284,8 @@ class TestWiredIntoEvaluation:
         assert decision == "deny"
         assert "not the root itself" in reason
 
-    def test_recursive_rm_outside_scope_still_asks(self):
-        assert evaluate_command("rm -rf /usr/local", self.CWD)[0] == "ask"
+    def test_recursive_rm_outside_scope_denied(self):
+        assert evaluate_command("rm -rf /usr/local", self.CWD)[0] == "deny"
 
     def test_loop_body_prefix_still_scoped(self):
         assert evaluate_command("do rm -rf /tmp/probe", self.CWD)[0] == "allow"

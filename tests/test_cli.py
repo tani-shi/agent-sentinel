@@ -23,7 +23,7 @@ def log_dir(tmp_path):
 
 
 class TestHookMode:
-    def test_codex_never_uses_claude_sdk(self, capsys, log_dir):
+    def test_codex_defer_writes_nothing(self, capsys, log_dir):
         hook_input = {
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
@@ -31,13 +31,9 @@ class TestHookMode:
             "session_id": "test",
             "cwd": "/tmp",
         }
-        with (
-            patch("agent_sentinel.hook_io.read_input", return_value=hook_input),
-            patch("agent_sentinel.llm_judge.evaluate") as judge,
-        ):
+        with patch("agent_sentinel.hook_io.read_input", return_value=hook_input):
             main(["--host", "codex"])
 
-        judge.assert_not_called()
         assert capsys.readouterr().out == ""
 
     def test_hook_writes_log(self, log_dir):
@@ -86,11 +82,9 @@ class TestTestMode:
         rec = json.loads(log_file.read_text().strip())
         assert rec["decision"]["result"] == "allow"
 
-    def test_codex_unknown_command_defers_without_claude_sdk(self, capsys, log_dir):
-        with patch("agent_sentinel.llm_judge.evaluate") as judge:
-            main(["--host", "codex", "--test", "unknown-command"])
+    def test_codex_unknown_command_defers(self, capsys, log_dir):
+        main(["--host", "codex", "--test", "unknown-command"])
 
-        judge.assert_not_called()
         assert "DEFER [CODEX_NATIVE]" in capsys.readouterr().out
 
     def test_codex_deny_uses_codex_evaluator(self, capsys, log_dir):
@@ -206,10 +200,10 @@ class TestLogSubcommand:
         main(["--host", "codex", "--test", "ssh production"])
         capsys.readouterr()
 
-        main(["log", "--stage", "CODEX_RULE_PROMPT", "--json"])
+        main(["log", "--stage", "CODEX_NATIVE", "--json"])
         rec = json.loads(capsys.readouterr().out)
         assert rec["decision"]["result"] == "defer"
-        assert rec["decision"]["owner"] == "execpolicy"
+        assert rec["decision"]["owner"] == "native"
 
     def test_log_tail(self, capsys, log_dir):
         main(["--test", "ls"])
@@ -281,7 +275,7 @@ class TestLogSubcommand:
 
         assert replay["replayable"] is True
         assert replay["changed"] is False
-        assert replay["current"]["owner"] == "execpolicy"
+        assert replay["current"]["owner"] == "native"
 
 
 class TestRulesSubcommand:

@@ -34,7 +34,7 @@ def replay_event(event: dict[str, Any]) -> dict[str, Any]:
     elif host == "codex":
         result = evaluator.evaluate_codex(hook_input)
     else:
-        result = evaluator.evaluate(hook_input, judge="disabled")
+        result = evaluator.evaluate(hook_input)
     if result is None:
         if host == "codex":
             owner, stage, reason = evaluator.codex_defer_target(hook_input)
@@ -55,17 +55,14 @@ def replay_event(event: dict[str, Any]) -> dict[str, Any]:
         decision, reason, stage = result
         current = {
             "result": decision,
-            "owner": "hook",
+            "owner": "native" if decision == "defer" else "hook",
             "stage": stage,
             "reason": reason,
         }
 
     recorded = _recorded_decision(event)
-    comparable = not (
-        host == "claude"
-        and current["stage"] == "JUDGE_DISABLED"
-        and recorded.get("stage", "").startswith("LLM_JUDGE")
-    )
+    # An LLM judge verdict from an earlier version has no static equivalent.
+    comparable = not recorded.get("stage", "").startswith("LLM_JUDGE")
     changed = comparable and any(
         recorded.get(field) != current.get(field) for field in ("result", "owner", "stage")
     )
@@ -164,21 +161,6 @@ def _audit_evaluation(event: dict[str, Any]) -> list[dict[str, str]]:
                     "critical",
                     "DENY_RESULT_MISMATCH",
                     f"DENY segment was logged without a DENY result: {raw}",
-                )
-            )
-        if (
-            event.get("phase", "PreToolUse") == "PreToolUse"
-            and segment.get("verdict") == "ask"
-            and segment.get("has_execpolicy_rule")
-            and not segment.get("execpolicy_covered")
-            and recorded.get("result") != "deny"
-        ):
-            findings.append(
-                _finding(
-                    event_id,
-                    "high",
-                    "ASK_NOT_COVERED_BY_EXECPOLICY",
-                    f"ASK segment was delegated without prompt coverage: {raw}",
                 )
             )
 

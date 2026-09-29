@@ -9,9 +9,6 @@ description = "Claude Code and Codex hook for evaluating tool permission request
 requires-python = ">=3.11"
 dependencies = []
 
-[project.optional-dependencies]
-claude = ["claude-agent-sdk>=0.1.0"]
-
 [project.scripts]
 agent-sentinel = "agent_sentinel.cli:main"
 

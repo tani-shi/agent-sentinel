@@ -1,4 +1,12 @@
-# Allow-listed commands and patterns that pass without confirmation.
+# Commands the hook approves without host review. Keep this to commands whose
+# effect the command line itself bounds: anything that runs code from its
+# arguments, project files, or packages belongs in defer.toml.
+
+[fragments]
+# A leading wrapper runs the command after it, so it cannot stand for the
+# program a rule names. The matcher retries the normalized form, where the
+# wrapped command is the head.
+not_wrapper = '''(?!(env|timeout|nice|ionice|stdbuf|xargs|command|exec|builtin|time|nohup|if|elif|do|then|else|!)(\s|$))'''
 
 # --- Shell Builtins & Navigation ---
 
@@ -41,10 +49,12 @@ command_regex = '''^\s*(grep|rg|ag)\s+'''
 # while/until are denied (unbounded loops); C-style `for (( ))` is denied in
 # deny.toml. Only a `for` over a literal list is allowed here — a `for` whose
 # iterator is a command substitution (`$(...)`/backticks) is left unmatched so
-# it reaches the LLM judge, which denies unbounded/side-effecting fan-out.
+# the host reviewer sees the fan-out.
+# Bare keywords only. A keyword followed by a command (`if sudo id`,
+# `do ./x.sh`) is judged by that command, which the normalizer exposes.
 [[rules]]
 name = "shell-constructs"
-command_regex = '''^\s*(if|case|do|done|then|else|elif|fi|esac)(\s|$)'''
+command_regex = '''^\s*(do|done|then|else|fi|esac)\s*$'''
 
 [[rules]]
 name = "for-list"
@@ -94,7 +104,7 @@ name = "test-bracket"
 command_regex = '''^\s*(\[|test)\s+'''
 
 # `env <cmd>` is normalized to `<cmd>`, so the wrapped command is judged on its
-# own merits (`env sudo ...` -> deny, `env python x` -> allow via python rule).
+# own merits (`env sudo ...` -> deny, `env python x` -> defer).
 # Only read-only `printenv` is auto-allowed here.
 [[rules]]
 name = "printenv"
@@ -168,25 +178,22 @@ command_regex = '''^\s*jq(\s|$)'''
 name = "xmllint"
 command_regex = '''^\s*xmllint(\s|$)'''
 
-# --- Shell Runners ---
-
-[[rules]]
-name = "zsh-run"
-command_regex = '''^\s*(zsh|bash|sh)\s+'''
-
 # --- Help & Version Flags ---
+# The program must be named, not given as a path: `./build.sh --help` runs
+# whatever the script holds, and so does `env ./build.sh --help`. Code runners
+# are caught first by defer.toml.
 
 [[rules]]
 name = "help-flag"
-command_regex = '''\s--help(\s|$)'''
+command_regex = '''^\s*@not_wrapper@[^\s/]+\s(.*\s)?--help(\s|$)'''
 
 [[rules]]
 name = "help-subcommand"
-command_regex = '''^\s*\S+\s+help(\s|$)'''
+command_regex = '''^\s*@not_wrapper@[^\s/]+\s+help(\s|$)'''
 
 [[rules]]
 name = "version-flag"
-command_regex = '''\s--version(\s|$)'''
+command_regex = '''^\s*@not_wrapper@[^\s/]+\s(.*\s)?--version(\s|$)'''
 
 # --- Git ---
 
@@ -194,8 +201,8 @@ command_regex = '''\s--version(\s|$)'''
 name = "git-status"
 command_regex = '''^\s*git\s+(-C\s+\S+\s+)?(status|log|diff|branch|show|rev-parse|remote)(\s|$)'''
 
-# `commit` is intentionally excluded — the `git-commit` ask rule enforces
-# the "never auto-commit" policy.
+# `commit` is intentionally excluded — the `git-commit` defer rule sends
+# commits to the host reviewer.
 
 [[rules]]
 name = "git-local-ops"
@@ -223,12 +230,8 @@ command_regex = '''^\s*git\s+(-C\s+\S+\s+)?push(\s|$)'''
 # --- Python ---
 
 [[rules]]
-name = "python-run"
-command_regex = '''^\s*python3?\s+'''
-
-[[rules]]
 name = "uv-safe"
-command_regex = '''^\s*uv\s+(run|sync|lock|tree|pip\s+(list|show|check|freeze)|tool\s+run|version|self\s+version|venv|init|build|export)(\s|$)'''
+command_regex = '''^\s*uv\s+(sync|lock|tree|pip\s+(list|show|check|freeze)|version|self\s+version|venv|init|build|export)(\s|$)'''
 
 [[rules]]
 name = "pip-read"
@@ -237,24 +240,12 @@ command_regex = '''^\s*pip3?\s+(show|list|freeze|check|search|config\s+(list|get
 # --- Node.js ---
 
 [[rules]]
-name = "node-run"
-command_regex = '''^\s*node\s+'''
-
-[[rules]]
 name = "bun-safe"
-command_regex = '''^\s*bun\s+(run|test|build|install|add|remove|update|init|create|pm)(\s|$)'''
+command_regex = '''^\s*bun\s+(build|install|add|remove|update|pm)(\s|$)'''
 
 [[rules]]
 name = "npm-safe"
-command_regex = '''^\s*(npm|yarn|pnpm)\s+(install|ci|test|start|build|clean|lint|format|check|outdated|list|ls|info|view|show|explain|why|audit|fund|pack|init|create|exec|config|cache|doctor|prefix|root|search|completion|help|set|get|version)(\s|$)'''
-
-[[rules]]
-name = "npx-safe"
-command_regex = '''^\s*(npx|pnpx|bunx)\s+(prettier|eslint|tsc|biome|shadcn(@\S+)?|prisma|vitest|jest|mocha|playwright|cypress|tailwindcss|postcss|autoprefixer|next|vite|turbo|tsup|esbuild|rollup|webpack)(\s|$)'''
-
-[[rules]]
-name = "npm-run-safe"
-command_regex = '''^\s*(npm|yarn|pnpm)\s+run\s+(test|lint|build|dev|start|check|format|clean|docs|typecheck|type-check|analyze|watch|serve|preview|generate|codegen|prepare|preinstall|postinstall|prebuild|postbuild|cli)(\s|$)'''
+command_regex = '''^\s*(npm|yarn|pnpm)\s+(install|ci|outdated|list|ls|info|view|show|explain|why|audit|fund|pack|config|cache|doctor|prefix|root|search|completion|help|set|get|version)(\s|$)'''
 
 # --- Rust ---
 
@@ -268,33 +259,23 @@ command_regex = '''^\s*rustup\s+(show|which|doc|completions|check|--version)(\s|
 
 [[rules]]
 name = "cargo-safe"
-command_regex = '''^\s*cargo\s+(build|check|test|run|bench|clean|doc|new|init|fmt|clippy|fix|tree|metadata|verify-project|generate-lockfile|fetch|package|vendor|report|help|version)(\s|$)'''
+command_regex = '''^\s*cargo\s+(build|check|clean|doc|new|init|fmt|clippy|fix|tree|metadata|verify-project|generate-lockfile|fetch|package|vendor|report|help|version)(\s|$)'''
 
 # --- Go ---
 
 [[rules]]
 name = "go"
-command_regex = '''^\s*go\s+(build|run|test|mod|fmt|vet)(\s|$)'''
+command_regex = '''^\s*go\s+(build|mod|fmt|vet)(\s|$)'''
 
 # --- .NET ---
 
 [[rules]]
 name = "dotnet"
-command_regex = '''^\s*dotnet\s+(build|run|test|restore|publish|clean|format|msbuild|watch|list|sln|pack|vstest|nuget\s+locals|--info|--version|--list-sdks|--list-runtimes)(\s|$)|^\s*dotnet\s+\S*\.dll(\s|$)'''
+command_regex = '''^\s*dotnet\s+(build|restore|publish|clean|format|msbuild|list|sln|pack|nuget\s+locals|--info|--version|--list-sdks|--list-runtimes)(\s|$)'''
 
 [[rules]]
 name = "msbuild"
 command_regex = '''^\s*msbuild(\s|$)'''
-
-# --- Make ---
-# Trust the project's Makefile the same way we trust cargo/npm/uv/go: any
-# target may run arbitrary code, so listing specific targets gave a false
-# sense of safety while breaking project-specific targets like
-# `make door-ne-download`.
-
-[[rules]]
-name = "make"
-command_regex = '''^\s*make(\s|$)'''
 
 # --- Linters & Formatters ---
 
@@ -370,7 +351,7 @@ command_regex = '''^\s*gcloud\s+.*\s+(detect-\w+|analyze-\w+|classify-text|recog
 
 [[rules]]
 name = "firebase-read"
-command_regex = '''^\s*firebase\s+(emulators:(start|exec)|serve|init|functions:log|firestore:indexes|projects:list|apps:list|functions:config:get|login:list|setup:emulators:\w+|target|target:apply|target:clear|target:remove)(\s|$)'''
+command_regex = '''^\s*firebase\s+(emulators:start|serve|init|functions:log|firestore:indexes|projects:list|apps:list|functions:config:get|login:list|setup:emulators:\w+|target|target:apply|target:clear|target:remove)(\s|$)'''
 
 # --- AWS ---
 
@@ -531,7 +512,7 @@ command_regex = '''^\s*ntn\s+(pages\s+get|datasources\s+(query|resolve)|files\s+
 # `ntn api` reads are limited to endpoint discovery and docs (`ls`, `--spec`,
 # `--docs`). Raw data calls are left unlisted: Notion's read endpoints
 # (/v1/search, /v1/databases/{id}/query) use POST+body, so body presence can't
-# distinguish read from write — those fall through to the LLM judge instead.
+# distinguish read from write — those defer instead.
 [[rules]]
 name = "ntn-api-read"
 command_regex = '''^\s*ntn\s+api\s+(.*\s)?(ls|--spec|--docs)(\s|$)'''

@@ -1,4 +1,7 @@
-# Commands classified as ASK without LLM evaluation.
+# Commands the hook leaves to the host reviewer (Claude Code auto mode
+# classifier, Codex auto-review). A match overrides every allow rule, so these
+# also carve exceptions out of broad allow rules such as `git-local-ops`.
+# Commands that match no rule defer the same way.
 
 # Shared regex fragments, substituted into `@name@` tokens by the rule
 # engine before compilation (TOML has no string interpolation).
@@ -15,6 +18,7 @@
 #     --resolve, --connect-to, --proxy, --preproxy, --interface, --dns-*,
 #     --socks*, --next, -x, -K, --config)
 [fragments]
+not_version_query = '''(?!\s*(--version|-V|--help|-h)\s*$)'''
 loopback_only = '''(?=.*https?://(localhost|127\.0\.0\.1|\[::1\])[:/])(?!.*://(?!(localhost|127\.0\.0\.1|\[::1\])[:/]))(?!.*\s(?![-./])[\w-]+(\.[\w-]+)+([:/]|\s|$))(?!.*[`$])(?!.*((?<!\S)-[a-zA-Z]*L|--location|--resolve|--connect-to|--proxy|--preproxy|--interface|--dns-|--socks|--next|(?<!\S)-x\s|(?<!\S)-K\s|--config))'''
 
 # --- Remote / System Access ---
@@ -53,23 +57,48 @@ command_regex = '''^\s*kubectl\s+(apply|delete|create|replace|patch|edit|rollout
 name = "helm-mutate"
 command_regex = '''^\s*helm\s+(install|upgrade|uninstall|rollback)(\s|$)'''
 
-# --- Make External-Impact Targets ---
+# --- Code Execution ---
+# Commands that run code taken from their arguments, project files, or
+# installed packages. A hook allow would let arbitrary code skip the host
+# reviewer, and auto mode drops the equivalent allow rules for the same reason.
+# `@not_version_query@` keeps bare `--version` / `--help` queries allowed.
 
 [[rules]]
-name = "make-deploy"
-command_regex = '''^\s*make\s+(?!(tf|terraform)-(validate|plan|fmt|lint|init|output|show|state-list|state-show|workspace-list|workspace-show|workspace-select|providers|version|graph)(\s|$))((re|un|pre|post)?deploy([-_][\w-]*)?|tf[\w-]*|terraform-[\w-]*)(\s|$)'''
+name = "script-interpreter"
+command_regex = '''^\s*(python[\d.]*|node|deno|ruby|perl|php|bash|sh|zsh|dash|ksh|ash|fish)(\s|$)@not_version_query@'''
 
 [[rules]]
-name = "make-sync"
-command_regex = '''^\s*make\s+sync[\w-]*(\s|$)'''
+name = "package-script"
+command_regex = '''^\s*(npm|yarn|pnpm)\s+(run|run-script|test|t|start|restart|stop|exec|x|dlx|create|init|build|clean|lint|format|check)(\s|$)|^\s*bun\s+(run|test|x|create|init)(\s|$)'''
 
 [[rules]]
-name = "make-publish-release"
-command_regex = '''^\s*make\s+(publish|release|push)[\w-]*(\s|$)'''
+name = "package-exec"
+command_regex = '''^\s*(npx|pnpx|bunx|uvx)(\s|$)|^\s*uv\s+(run|tool\s+run)(\s|$)|^\s*pipx\s+run(\s|$)'''
 
 [[rules]]
-name = "make-upgrade"
-command_regex = '''^\s*make\s+upgrade[\w-]*(\s|$)'''
+name = "toolchain-run"
+command_regex = '''^\s*cargo\s+(run|r|test|t|bench)(\s|$)|^\s*go\s+(run|test|generate)(\s|$)|^\s*dotnet\s+(run|test|watch|vstest|\S*\.dll)(\s|$)'''
+
+[[rules]]
+name = "make"
+command_regex = '''^\s*make(\s|$)@not_version_query@'''
+
+[[rules]]
+name = "firebase-emulators-exec"
+command_regex = '''^\s*firebase\s+emulators:exec(\s|$)'''
+
+# Read-only tools with a flag or statement that runs another program.
+[[rules]]
+name = "find-exec"
+command_regex = '''^\s*find\s+.*\s-(exec|execdir|ok|okdir|delete)(\s|$)'''
+
+[[rules]]
+name = "awk-system"
+command_regex = '''^\s*awk\s+.*(system\s*\(|\|\s*getline|printf?\b[^;}]*\|)'''
+
+[[rules]]
+name = "sqlite3-shell"
+command_regex = '''^\s*sqlite3\s+.*\.(shell|system|load)\b'''
 
 # --- Package Publishing ---
 
@@ -84,12 +113,6 @@ command_regex = '''^\s*gem\s+push(\s|$)'''
 [[rules]]
 name = "twine-upload"
 command_regex = '''^\s*twine\s+upload(\s|$)'''
-
-# --- Package Execution (npx/pnpx/bunx) ---
-
-[[rules]]
-name = "npx-execute"
-command_regex = '''^\s*(npx|pnpx|bunx)\s+(?!(prettier|eslint|tsc|biome|shadcn(@\S+)?|prisma|vitest|jest|mocha|playwright|cypress|tailwindcss|postcss|autoprefixer|next|vite|turbo|tsup|esbuild|rollup|webpack)(\s|$))'''
 
 # --- Python Toolchain Mutations ---
 
@@ -120,12 +143,6 @@ command_regex = '''^\s*docker\s+(push|buildx\s+.*--push)(\s|$)'''
 [[rules]]
 name = "docker-compose-exec-run"
 command_regex = '''^\s*docker[\s-]+compose\s+(exec|run)(\s|$)'''
-
-# --- Go Generate ---
-
-[[rules]]
-name = "go-generate"
-command_regex = '''^\s*go\s+generate(\s|$)'''
 
 # --- GitHub Mutations ---
 
@@ -172,11 +189,10 @@ command_regex = '''^\s*git\s+(-C\s+\S+\s+)?commit(\s|$)'''
 # --- HTTP Mutations ---
 
 # `@loopback_only@` (defined in [fragments], expanded by the rule engine)
-# suppresses ASK when a curl/wget mutation targets ONLY a literal loopback
-# host — the command then falls through to the LLM judge, not to instant
-# allow. Each guard in the fragment blocks a distinct way a request could
-# still leave the loopback; false positives only cost an ASK prompt, so the
-# guards err toward matching.
+# exempts a curl/wget mutation that targets ONLY a literal loopback host. The
+# exemption does not allow it: no allow rule covers the mutation, so it still
+# defers. Each guard in the fragment blocks a distinct way a request could
+# still leave the loopback.
 
 [[rules]]
 name = "curl-mutate"
@@ -232,12 +248,6 @@ command_regex = '''^\s*firebase\s+functions:config:(set|unset|clone)(\s|$)'''
 name = "firebase-login"
 command_regex = '''^\s*firebase\s+(login|logout)(\s|$)'''
 
-# --- Database Migrations ---
-
-[[rules]]
-name = "npm-run-migrate"
-command_regex = '''^\s*(npm|yarn|pnpm)\s+run\s+.*migrat(e|ion)'''
-
 # --- macOS Preferences Mutations ---
 
 [[rules]]
@@ -275,10 +285,6 @@ command_regex = '''^\s*agent-sentinel\s+(install|uninstall)(\s|$)'''
 # --- Destructive File / Git / Process Operations ---
 
 [[rules]]
-name = "rm-recursive"
-command_regex = '''^\s*rm\s+.*(-[a-zA-Z]*[rR][a-zA-Z]*\s|--recursive)'''
-
-[[rules]]
 name = "git-reset-hard"
 command_regex = '''^\s*git\s+(-C\s+\S+\s+)?reset\s+--hard'''
 
@@ -287,21 +293,6 @@ name = "git-checkout"
 command_regex = '''^\s*git\s+(-C\s+\S+\s+)?checkout(\s|$)'''
 reason = "`git checkout` bundles branch switching with destructive file restore. Switch branches with `git switch` (`-c` to create, `--detach` for a detached HEAD), and stage a file from another revision with `git restore --source=<rev> --staged`."
 
-# `-S` is `--staged` while `-s` is `--source`, and rules compile
-# case-sensitively: widening to `-[sS]` would exempt a worktree-overwriting
-# `git restore -s <rev>`.
-[[rules]]
-name = "git-restore-worktree"
-command_regex = '''^\s*git\s+(-C\s+\S+\s+)?restore(?=\s)(?!(?=.*\s(--staged|-S)(\s|$))(?!.*\s(--worktree|-W)(\s|$)))'''
-reason = "Restoring into the working tree overwrites uncommitted work. Save changes with `git stash push --include-untracked` before restoring, or use `git restore --staged` to change only the index."
-
-# `git switch -C` (force-create a branch) is not here: it leaves the worktree
-# alone, and the branch move is recoverable through the reflog. The `(\s|$)`
-# terminator keeps `--force-create` — the long spelling of `-C` — unmatched.
-[[rules]]
-name = "git-switch-force"
-command_regex = '''^\s*git\s+(-C\s+\S+\s+)?switch(?=\s)(?=.*\s(--force|--discard-changes|-[a-zA-Z]*f[a-zA-Z]*)(\s|$))'''
-
 [[rules]]
 name = "git-clean"
 command_regex = '''^\s*git\s+(-C\s+\S+\s+)?clean\s+'''
@@ -309,10 +300,6 @@ command_regex = '''^\s*git\s+(-C\s+\S+\s+)?clean\s+'''
 [[rules]]
 name = "osascript"
 command_regex = '''^\s*osascript\s+'''
-
-[[rules]]
-name = "bun-x-execute"
-command_regex = '''^\s*bun\s+x(\s|$)'''
 
 [[rules]]
 name = "kill"

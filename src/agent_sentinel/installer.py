@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 
 from agent_sentinel import rule_engine
-from agent_sentinel.evaluator import ASK_TOOLS, AUTO_ALLOW_TOOLS, FILE_TOOLS
+from agent_sentinel.evaluator import AUTO_ALLOW_TOOLS
 
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
@@ -27,9 +27,26 @@ LEGACY_FILE_TOOLS = ["MultiEdit"]
 DENY_RULE_TOOLS = ("Edit", "Read")
 
 # Deny globs for these tools are no longer generated but may linger from an
-# earlier install; strip them. The bare allow entry stays (Write is still a
-# live runtime tool), so ordinary in-project writes retain their allow entry.
+# earlier install; strip them.
 STALE_DENY_TOOLS = ["Write"]
+
+# Entries an earlier version managed. The bare file-tool allows approved edits
+# outside the working directories without review, and ask entries forced
+# prompts that the host reviewer now owns.
+RETIRED_ENTRIES = {
+    "allow": ["Read", "Write", "Edit"],
+    "ask": [
+        "mcp__claude_ai_Slack__slack_send_message",
+        "mcp__claude_ai_Slack__slack_send_message_draft",
+        "mcp__claude_ai_Slack__slack_schedule_message",
+        "mcp__claude_ai_Slack__slack_create_canvas",
+        "mcp__claude_ai_Slack__slack_update_canvas",
+        "mcp__claude_ai_Notion__notion-create-*",
+        "mcp__claude_ai_Notion__notion-update-*",
+        "mcp__claude_ai_Notion__notion-duplicate-*",
+        "mcp__claude_ai_Notion__notion-move-*",
+    ],
+}
 
 # Globs a rule once emitted but no longer does. _remove_stale_permissions derives
 # its removals from the *current* globs, so a retired glob would otherwise linger
@@ -59,14 +76,12 @@ def _deny_entries(tools: tuple[str, ...] | list[str], globs: list[str]) -> list[
 def _get_managed_permissions() -> dict[str, list[str]]:
     """Get managed permission entries from rules and evaluator.
 
-    File tools receive allow entries for ordinary in-project edits. The
-    installer also writes deny and ask entries. Their runtime effect depends
-    on Claude Code's permission handling.
+    Deny entries repeat the sensitive path rules so Claude Code enforces them
+    itself; allow entries mirror the hook's auto-allowed tools.
     """
     return {
         "deny": sorted(_deny_entries(DENY_RULE_TOOLS, rule_engine.sensitive_path_globs())),
-        "allow": sorted(AUTO_ALLOW_TOOLS | FILE_TOOLS),
-        "ask": sorted(ASK_TOOLS),
+        "allow": sorted(AUTO_ALLOW_TOOLS),
     }
 
 
@@ -102,8 +117,9 @@ def install(settings_path: Path | None = None) -> str:
     # Merge permissions
     managed = _get_managed_permissions()
     perm_added = {}
-    for key in ("deny", "allow", "ask"):
+    for key in ("deny", "allow"):
         perm_added[key] = _merge_permissions(settings, key, managed[key])
+    _drop_empty_permissions(settings)
 
     # Drop any hook left by an earlier layout so it does not fire in parallel.
     legacy_removed = False
@@ -139,7 +155,7 @@ def install(settings_path: Path | None = None) -> str:
         lines.append(f"agent-sentinel updated {path}")
 
     lines.append(f"  hooks: {'installed' if hooks_installed else 'already installed'}")
-    for key in ("deny", "allow", "ask"):
+    for key in ("deny", "allow"):
         added = perm_added[key]
         total = len(settings.get("permissions", {}).get(key, []))
         if added > 0:
@@ -170,16 +186,9 @@ def uninstall(settings_path: Path | None = None) -> str:
     stale_removed = _remove_stale_permissions(settings)
     managed = _get_managed_permissions()
     perm_removed = {}
-    for key in ("deny", "allow", "ask"):
+    for key in ("deny", "allow"):
         perm_removed[key] = _remove_permissions(settings, key, managed[key])
-
-    # Clean up empty permissions
-    perms = settings.get("permissions", {})
-    for key in ["deny", "allow", "ask"]:
-        if key in perms and not perms[key]:
-            del perms[key]
-    if "permissions" in settings and not settings["permissions"]:
-        del settings["permissions"]
+    _drop_empty_permissions(settings)
 
     # Remove hooks (including any left by an earlier layout). Accumulating in a
     # loop rather than `any(...)`: the generator form stops at the first removal,
@@ -196,7 +205,7 @@ def uninstall(settings_path: Path | None = None) -> str:
 
     lines = [f"agent-sentinel removed from {path}"]
     lines.append(f"  hooks: {'removed' if hooks_removed else 'not found'}")
-    for key in ("deny", "allow", "ask"):
+    for key in ("deny", "allow"):
         removed = perm_removed[key]
         remaining = len(settings.get("permissions", {}).get(key, []))
         if removed > 0:
@@ -240,9 +249,10 @@ def _remove_stale_permissions(settings: dict) -> bool:
     """Strip permission entries Claude Code no longer honors. Returns True if any removed.
 
     LEGACY_FILE_TOOLS have their deny globs and bare allow entry removed (the
-    tool is gone). STALE_DENY_TOOLS keep their bare allow entry (Write is still
-    a live runtime tool) and only shed their now-ignored path-scoped deny globs.
-    RETIRED_DENY_GLOBS are dropped for every tool that ever emitted them.
+    tool is gone). STALE_DENY_TOOLS shed their now-ignored path-scoped deny
+    globs.
+    RETIRED_DENY_GLOBS are dropped for every tool that ever emitted them, and
+    RETIRED_ENTRIES wherever they appear.
     """
     globs = rule_engine.sensitive_path_globs()
     removed = 0
@@ -258,7 +268,18 @@ def _remove_stale_permissions(settings: dict) -> bool:
             (*DENY_RULE_TOOLS, *LEGACY_FILE_TOOLS, *STALE_DENY_TOOLS), RETIRED_DENY_GLOBS
         ),
     )
+    for key, entries in RETIRED_ENTRIES.items():
+        removed += _remove_permissions(settings, key, entries)
     return removed > 0
+
+
+def _drop_empty_permissions(settings: dict) -> None:
+    perms = settings.get("permissions", {})
+    for key in ("deny", "allow", "ask"):
+        if key in perms and not perms[key]:
+            del perms[key]
+    if "permissions" in settings and not settings["permissions"]:
+        del settings["permissions"]
 
 
 def _merge_permissions(settings: dict, key: str, entries: list[str]) -> int:

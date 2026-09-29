@@ -31,7 +31,7 @@ class RuleSet:
 # Module-level cache
 _deny_rules: RuleSet | None = None
 _allow_rules: RuleSet | None = None
-_ask_rules: RuleSet | None = None
+_defer_rules: RuleSet | None = None
 
 
 def _parse_rules(data: dict[str, Any], *, kind: str) -> RuleSet:
@@ -40,7 +40,7 @@ def _parse_rules(data: dict[str, Any], *, kind: str) -> RuleSet:
     DENY rules are compiled with re.MULTILINE so the unparseable-command
     pre-filter catches `^\\s*sudo\\s+` etc. inside heredoc bodies, and so
     parsed segments containing multi-line content (e.g. ``bash -c '<body>'``)
-    still trip line-anchored deny patterns. ASK and ALLOW rules use a plain
+    still trip line-anchored deny patterns. DEFER and ALLOW rules use a plain
     anchor: a multi-line jq/awk/sed script in a single-quoted argument
     must not be interpreted line-by-line as bash commands.
     """
@@ -111,12 +111,12 @@ def get_allow_rules() -> RuleSet:
     return _allow_rules
 
 
-def get_ask_rules() -> RuleSet:
-    """Get cached ask rules."""
-    global _ask_rules
-    if _ask_rules is None:
-        _ask_rules = load_rules(kind="ask")
-    return _ask_rules
+def get_defer_rules() -> RuleSet:
+    """Get cached defer rules."""
+    global _defer_rules
+    if _defer_rules is None:
+        _defer_rules = load_rules(kind="defer")
+    return _defer_rules
 
 
 def _match_command_rules(rules: list[Rule], command: str) -> Rule | None:
@@ -145,14 +145,14 @@ def match_allow(command: str) -> Rule | None:
     return _match_command_rules(get_allow_rules().command_rules, command)
 
 
-def match_ask(command: str) -> Rule | None:
-    """Check if command matches any ask rule.
+def match_defer(command: str) -> Rule | None:
+    """Check if command matches any defer rule.
 
     Critical for safety: ``git -c safecrlf=false reset --hard`` must
-    still match the ``git-reset-hard`` ask rule rather than falling
-    through to LLM_JUDGE.
+    still match the ``git-reset-hard`` defer rule rather than the broad
+    ``git-local-ops`` allow rule.
     """
-    return _match_command_rules(get_ask_rules().command_rules, command)
+    return _match_command_rules(get_defer_rules().command_rules, command)
 
 
 def match_sensitive_path(file_path: str) -> Rule | None:
@@ -226,7 +226,7 @@ def match_secret_operand(command: str, cwd: str) -> Rule | None:
     # Only a command the splitter could read: whitespace-splitting a raw string
     # cannot tell an operand from a mention, and would deny a heredoc body or a
     # loop list that merely names `.env`. An unparseable command keeps the deny
-    # regexes and the LLM judge, which is where the splitter's limits always land.
+    # regexes and defers to the host reviewer.
     for word in _operand_candidates(tokenize(command)):
         if "$" in word or "`" in word:
             continue
@@ -253,10 +253,10 @@ def _operand_candidates(tokens: list[str]) -> Iterator[str]:
 
 def reset_cache() -> None:
     """Reset the rule and probe caches (useful for testing)."""
-    global _deny_rules, _allow_rules, _ask_rules
+    global _deny_rules, _allow_rules, _defer_rules
     _deny_rules = None
     _allow_rules = None
-    _ask_rules = None
+    _defer_rules = None
     deletion_scope.reset_temp_roots()
     git_probe.reset_probes()
 
@@ -282,11 +282,10 @@ def reset_cache() -> None:
 #     contain $(...) which IS a command)
 #   * Redirections that include & as a fd reference: >&N, <&N, &>, &>>
 #
-# Anything we don't recognise (heredocs, ANSI-C $'...' quoting, control
-# constructs like `case`, etc.) raises _ParseError, which the caller turns
-# into a safe "ask" fallback. Missing-but-safe is the design: a parser bug
-# can never silently ALLOW a dangerous command — at worst it forces an
-# extra confirmation prompt.
+# Anything we don't recognise (ANSI-C $'...' quoting, control constructs like
+# `case`, etc.) raises _ParseError, which the caller turns into a defer.
+# Missing-but-safe is the design: a parser bug can never silently ALLOW a
+# dangerous command — at worst it costs a host review.
 
 
 class _ParseError(Exception):
@@ -549,7 +548,7 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
                 # A command-position subshell isn't a command itself; its body
                 # is collected above for recursion. Drop the ``(...)`` wrapper
                 # from the emitted segment (it matches no rule, forcing a
-                # needless LLM fallback) while leaving any trailing redirection
+                # needless defer) while leaving any trailing redirection
                 # as its own segment so deny rules still see it.
                 cmd_start = i
             continue
@@ -716,7 +715,7 @@ def extract_commands(command: str) -> list[str] | None:
     Returns:
         * ``[]`` if the input is empty/whitespace.
         * ``None`` if the input is malformed or uses unsupported syntax
-          (caller resolves this to a safe "ask" decision).
+          (caller resolves this to a defer).
         * Otherwise, a list of command strings — one for every simple
           command found at any nesting level (top-level, inside
           ``$(...)`` / `` `...` `` / ``<(...)`` / ``(...)`` subshells, and
@@ -745,7 +744,7 @@ def extract_commands(command: str) -> list[str] | None:
     # Recurse into `bash -c <script>` / `eval <script>` inline scripts so their
     # commands face the same rules. If an inner script is itself unparseable, we
     # must not let the opaque wrapper segment be auto-allowed — treat the whole
-    # command as unparseable so it goes through the deny prefilter and the LLM.
+    # command as unparseable so it goes through the deny prefilter and defers.
     for segment in list(out):
         script = _extract_inline_script(segment)
         if script is None:
@@ -757,96 +756,17 @@ def extract_commands(command: str) -> list[str] | None:
     return out
 
 
-# Interpreters that run arbitrary code and so must be intercepted before the
-# broad allow rules. node/python/bash/sh/zsh are otherwise blanket-allowed by
-# node-run/python-run/zsh-run; ruby/perl/dash/ksh/ash have no allow rule and are
-# escalated only to upgrade an out-of-project script from the plain judge to the
-# read judge. deno/bun are excluded: their subcommand grammar (``deno run
-# <file>`` / ``bun run <script-name>``) doesn't fit the ``<interp> [opts]
-# <file>`` model a reader would otherwise expect them to.
-_SCRIPT_INTERPRETERS: frozenset[str] = frozenset(
-    {"node", "python", "python3", "ruby", "perl", "bash", "sh", "zsh", "dash", "ksh", "ash"}
-)
-
-# Flags that make an interpreter run inline code from the command string rather
-# than a file. The code is visible to the judge in the command text, so these
-# route to the plain LLM judge rather than the read judge. Shells are absent:
-# their ``-c`` inline form is unwrapped and re-evaluated upstream by
-# ``extract_commands`` (see ``_SHELL_C_RUNNERS``).
-_INLINE_EVAL_FLAGS: dict[str, frozenset[str]] = {
-    "node": frozenset({"-e", "--eval", "-p", "--print"}),
-    "python": frozenset({"-c"}),
-    "python3": frozenset({"-c"}),
-    "ruby": frozenset({"-e"}),
-    "perl": frozenset({"-e", "-E"}),
-}
-
-
-def _has_inline_flag(args: list[str], inline_flags: frozenset[str]) -> bool:
-    """True if any arg is an inline-eval flag, including the glued short form
-    (``-ecode``) and the ``=``-attached long form (``--eval=code``). Matching the
-    bare split token alone would miss ``node -e'code'`` / ``python -c'code'`` and
-    let the inline code reach the permissive interpreter allow rule."""
-    for arg in args:
-        for flag in inline_flags:
-            if flag.startswith("--"):
-                if arg == flag or arg.startswith(flag + "="):
-                    return True
-            elif arg.startswith(flag):
-                return True
-    return False
-
-
-def _interpreter_escalation(segment: str, cwd: str) -> tuple[str | None, list[str]]:
-    """Classify an interpreter invocation that must escalate past the broad
-    ``node-run`` / ``python-run`` / ``zsh-run`` allow rules.
-
-    Returns ``(kind, outside_paths)`` where kind is:
-        * ``"llm"``      — inline code execution (``node -e``, ``python -c`` …).
-        * ``"llm_read"`` — runs a script FILE outside ``cwd``; ``outside_paths``
-          holds the resolved paths so the caller can grant the judge read access.
-        * ``None``       — not an escalating interpreter invocation (in-project
-          script, REPL, ``python -m`` …); defer to the normal allow rules.
-    """
+def _is_shell_inline_wrapper(segment: str) -> bool:
+    """True for a ``<shell> [opts] -c <script>`` segment. The script's commands
+    are extracted and evaluated as segments of their own, so the wrapper adds
+    nothing to judge; without this the ``script-interpreter`` defer rule would
+    defer every ``bash -c 'ls'``."""
     tokens = tokenize(segment)
-    if not tokens:
-        return None, []
-    head = os.path.basename(tokens[0])
-    if head not in _SCRIPT_INTERPRETERS:
-        return None, []
-
-    args = tokens[1:]
-    if _has_inline_flag(args, _INLINE_EVAL_FLAGS.get(head, frozenset())):
-        return "llm", []
-    # A shell ``-c '<script>'`` is inline code, already unwrapped and re-evaluated
-    # by ``extract_commands``; its value is not a script file to read.
-    if head in _SHELL_C_RUNNERS and any(_DASH_C_FLAG.fullmatch(a) for a in args):
-        return None, []
-
-    outside = _out_of_project_scripts(args, cwd)
-    if outside:
-        return "llm_read", outside
-    return None, []
-
-
-def _out_of_project_scripts(args: list[str], cwd: str) -> list[str]:
-    """Resolved paths, among an interpreter's non-flag ``args``, that live outside
-    ``cwd``. Every non-flag argument is checked (not just the first positional):
-    a script can follow a value-taking flag, as in ``node -r preload.js app.js``
-    or ``python -W ignore ../outside/evil.py``, so restricting to the first
-    positional would miss it. In-project arguments resolve inside ``cwd`` and are
-    not flagged, so ordinary data-file arguments do not escalate.
-    """
-    base = os.path.expanduser(cwd)
-    root = os.path.realpath(base)
-    outside: list[str] = []
-    for arg in args:
-        if arg.startswith("-"):
-            continue
-        resolved = paths.resolve(arg, base)
-        if not paths.is_within(resolved, root):
-            outside.append(resolved)
-    return outside
+    return (
+        bool(tokens)
+        and tokens[0] in _SHELL_C_RUNNERS
+        and (_extract_inline_script(segment) is not None)
+    )
 
 
 class SegmentVerdict(NamedTuple):
@@ -856,7 +776,6 @@ class SegmentVerdict(NamedTuple):
     decision: str
     name: str = ""
     reason: str | None = None
-    read_paths: tuple[str, ...] = ()
 
 
 class BashSegmentInspection(NamedTuple):
@@ -871,41 +790,34 @@ class BashInspection(NamedTuple):
     segments: tuple[BashSegmentInspection, ...]
 
 
-class AskMatch(NamedTuple):
-    name: str
-    segment: str
-
-
-def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) -> SegmentVerdict:
-    """Evaluate a single segment through DENY -> deletion scope -> ASK ->
-    interpreter escalation -> ALLOW.
-
-    ``decision`` is one of 'deny', 'ask', 'llm', 'llm_read', 'allow',
-    'unmatched'. ``read_paths`` holds the out-of-project script paths to grant
-    read access to; it is non-empty only for 'llm_read'.
-
-    The deletion scope runs before ASK so a recursive ``rm`` confined to a temp
-    root is not held up by the ``rm-recursive`` ask rule, and the interpreter
-    escalation runs before ALLOW so that inline code (``node -e``) and
-    out-of-project script files (``bash /tmp/x.sh``) are not swallowed by the
-    permissive ``node-run`` / ``zsh-run`` allow rules.
-    """
-    deny = (
+def _match_deny_forms(segment: str, cwd: str) -> Rule | None:
+    return (
         match_deny(segment)
         or match_inplace_write_sensitive(segment)
         or match_secret_operand(segment, cwd)
     )
+
+
+def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) -> SegmentVerdict:
+    """Evaluate a single segment through DENY -> deletion scope -> DEFER -> ALLOW.
+
+    ``decision`` is one of 'deny', 'defer', 'allow', 'unmatched'.
+
+    The deletion scope runs before DEFER so a recursive ``rm`` confined to a temp
+    root is allowed, while one whose scope cannot be resolved is denied rather
+    than left to a reviewer.
+    """
+    deny = _match_deny_forms(segment, cwd)
     if deny:
         return SegmentVerdict("deny", deny.name, deny.reason)
     scope = deletion_scope.classify(segment, cwd, assignments)
     if scope is not None:
         return SegmentVerdict(scope.decision, scope.name, scope.reason)
-    ask = match_ask(segment)
-    if ask:
-        return SegmentVerdict("ask", ask.name, ask.reason)
-    kind, read_paths = _interpreter_escalation(segment, cwd)
-    if kind is not None:
-        return SegmentVerdict(kind, read_paths=tuple(read_paths))
+    if _is_shell_inline_wrapper(segment):
+        return SegmentVerdict("allow", "shell-inline-script")
+    defer = match_defer(segment)
+    if defer:
+        return SegmentVerdict("defer", defer.name)
     allow = match_allow(segment)
     if allow:
         return SegmentVerdict("allow", allow.name)
@@ -913,17 +825,13 @@ def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) ->
 
 
 def _evaluate_unparseable_segment(command: str, cwd: str) -> SegmentVerdict:
-    deny = (
-        match_deny(command)
-        or match_inplace_write_sensitive(command)
-        or match_secret_operand(command, cwd)
-    )
+    deny = _match_deny_forms(command, cwd) or deletion_scope.unparsed_recursive_rm(command)
     if deny:
         return SegmentVerdict("deny", deny.name, deny.reason)
-    ask = match_ask(command)
-    if ask:
-        return SegmentVerdict("ask", ask.name, ask.reason)
-    return SegmentVerdict("llm")
+    defer = match_defer(command)
+    if defer:
+        return SegmentVerdict("defer", defer.name)
+    return SegmentVerdict("unmatched")
 
 
 def inspect_bash_command(command: str, cwd: str | None = None) -> BashInspection:
@@ -957,36 +865,22 @@ def inspect_bash_command(command: str, cwd: str | None = None) -> BashInspection
     return BashInspection(parsed, tuple(inspections))
 
 
-def effective_ask_matches(command: str, cwd: str) -> list[AskMatch]:
-    """Return ASK rules that remain after DENY and deletion-scope evaluation."""
-    inspection = inspect_bash_command(command, cwd)
-    return [
-        AskMatch(segment.verdict.name, segment.raw)
-        for segment in inspection.segments
-        if segment.verdict.decision == "ask"
-    ]
-
-
-Decision = Literal["deny", "ask", "allow", "llm", "llm_read"]
+Decision = Literal["deny", "defer", "allow"]
 
 
 class BashEvaluation(NamedTuple):
-    """Full result of evaluating a bash command.
-
-    ``read_dirs`` is populated only when ``decision`` is ``"llm_read"``: the
-    directories the LLM judge must be granted read access to (``add_dirs``) so it
-    can inspect the out-of-project script files the command executes.
-    """
+    """Full result of evaluating a bash command. ``matched`` is False for a
+    defer that no rule asked for: an unmatched or unparseable segment."""
 
     decision: Decision
     reason: str
-    read_dirs: tuple[str, ...] = ()
+    matched: bool = True
 
 
 def _deny_reason(name: str, guidance: str | None) -> str:
-    """Deny reason surfaced to Claude, with the rule's guidance appended.
+    """Deny reason surfaced to the agent, with the rule's guidance appended.
 
-    A rule's optional guidance redirects Claude to the native alternative
+    A rule's optional guidance redirects the agent to the native alternative
     (subagent completion notification, run_in_background, KillShell/TaskStop)
     so a reason-less block does not push it toward a bypass.
     """
@@ -998,17 +892,12 @@ def evaluate_bash_command(command: str, cwd: str | None = None) -> BashEvaluatio
     """Evaluate a bash command by splitting it into segments, running each
     through :func:`_evaluate_segment`, and aggregating strictest-wins.
 
-    Decision precedence (most-restrictive wins):
-        deny > ask > llm_read > llm > allow
+    Decision precedence (most-restrictive wins): deny > defer > allow. An
+    unmatched segment defers, so a command is allowed only when every segment
+    matched an allow rule or an allowing deletion scope.
 
-    ``cwd`` is the working directory the command runs in; it decides whether an
-    interpreter's script-file argument is inside the project (allow) or outside
-    it (``llm_read``), and which recursive ``rm`` targets are project-local.
-    Defaults to ``os.getcwd()`` when not supplied.
-
-    For ``llm``/``llm_read`` the caller invokes the LLM judge with the original
-    full command; ``llm_read`` additionally carries ``read_dirs`` so the judge can
-    be granted read access to the out-of-project script files.
+    ``cwd`` is the working directory the command runs in; it decides which
+    recursive ``rm`` targets are project-local. Defaults to ``os.getcwd()``.
     """
     if cwd is None:
         cwd = os.getcwd()
@@ -1017,57 +906,39 @@ def evaluate_bash_command(command: str, cwd: str | None = None) -> BashEvaluatio
         verdict = inspection.segments[0].verdict
         if verdict.decision == "deny":
             return BashEvaluation("deny", _deny_reason(verdict.name, verdict.reason))
-        if verdict.decision == "ask":
-            return BashEvaluation("ask", f"Matched ask rule: {verdict.name}")
-        return BashEvaluation("llm", "Unparseable bash; deferring to LLM judge")
+        if verdict.decision == "defer":
+            return BashEvaluation("defer", f"Matched defer rule: {verdict.name}")
+        return BashEvaluation("defer", "Unparseable bash", matched=False)
     if not inspection.segments:
         return BashEvaluation("allow", "Empty command")
 
     deny_hit: SegmentVerdict | None = None
-    ask_hit: SegmentVerdict | None = None
+    defer_hit: SegmentVerdict | None = None
     has_unmatched = False
-    read_dirs: list[str] = []
-    seen_dirs: set[str] = set()
     allow_names: list[str] = []
-    seen_allow: set[str] = set()
     for segment in inspection.segments:
         verdict = segment.verdict
         if verdict.decision == "deny":
-            if deny_hit is None:
-                deny_hit = verdict
-        elif verdict.decision == "ask":
-            if ask_hit is None:
-                ask_hit = verdict
-        elif verdict.decision == "llm_read":
-            for parent in (os.path.dirname(p) for p in verdict.read_paths):
-                if parent and parent not in seen_dirs:
-                    seen_dirs.add(parent)
-                    read_dirs.append(parent)
+            deny_hit = deny_hit or verdict
+        elif verdict.decision == "defer":
+            defer_hit = defer_hit or verdict
         elif verdict.decision == "allow":
-            if verdict.name not in seen_allow:
-                seen_allow.add(verdict.name)
+            if verdict.name not in allow_names:
                 allow_names.append(verdict.name)
         else:
-            # "llm" (inline eval) and "unmatched" both defer to the plain judge.
             has_unmatched = True
 
     if deny_hit is not None:
         return BashEvaluation("deny", _deny_reason(deny_hit.name, deny_hit.reason))
-    if ask_hit is not None:
-        return BashEvaluation("ask", f"Matched ask rule: {ask_hit.name}")
-    if read_dirs:
-        return BashEvaluation(
-            "llm_read",
-            "Out-of-project script; deferring to LLM judge with file read",
-            tuple(read_dirs),
-        )
+    if defer_hit is not None:
+        return BashEvaluation("defer", f"Matched defer rule: {defer_hit.name}")
     if has_unmatched:
-        return BashEvaluation("llm", "No rule matched; deferring to LLM judge")
+        return BashEvaluation("defer", "No rule matched", matched=False)
     return BashEvaluation("allow", f"Allowed by rules: {', '.join(allow_names)}")
 
 
 def evaluate_command(command: str, cwd: str | None = None) -> tuple[Decision, str]:
     """Decision facade over :func:`evaluate_bash_command` for callers that need
-    only the (decision, reason) verdict, not the judge's read-access dirs."""
+    only the (decision, reason) verdict."""
     result = evaluate_bash_command(command, cwd)
     return result.decision, result.reason

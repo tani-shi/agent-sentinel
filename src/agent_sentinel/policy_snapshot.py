@@ -15,7 +15,7 @@ def policy_details(host: str) -> dict[str, Any]:
     rules_package = resources.files("agent_sentinel.rules")
     rules_content = b"".join(
         (rules_package / filename).read_bytes()
-        for filename in ("deny.toml", "ask.toml", "allow.toml")
+        for filename in ("deny.toml", "defer.toml", "allow.toml")
     )
     package = resources.files("agent_sentinel")
     evaluator_content = b"".join(
