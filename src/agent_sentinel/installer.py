@@ -31,10 +31,10 @@ DENY_RULE_TOOLS = ("Edit", "Read")
 STALE_DENY_TOOLS = ["Write"]
 
 # Entries an earlier version managed. The bare file-tool allows approved edits
-# outside the working directories without review, and ask entries forced
-# prompts that the host reviewer now owns.
+# outside the working directories without review, ask entries forced prompts
+# that the host reviewer now owns, and context7 is no longer auto-allowed.
 RETIRED_ENTRIES = {
-    "allow": ["Read", "Write", "Edit"],
+    "allow": ["Read", "Write", "Edit", "mcp__plugin_context7_context7__*"],
     "ask": [
         "mcp__claude_ai_Slack__slack_send_message",
         "mcp__claude_ai_Slack__slack_send_message_draft",

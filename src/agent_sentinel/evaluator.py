@@ -30,7 +30,6 @@ AUTO_ALLOW_TOOLS = {
     "mcp__claude_ai_Notion__notion-download-*",
     "mcp__claude_ai_Slack__slack_read_*",
     "mcp__claude_ai_Slack__slack_search_*",
-    "mcp__plugin_context7_context7__*",
 }
 
 # File tools evaluated through sensitive path deny rules.
