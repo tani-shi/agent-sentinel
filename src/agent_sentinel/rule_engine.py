@@ -5,12 +5,12 @@ from __future__ import annotations
 import os
 import re
 import tomllib
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from importlib import resources
 from typing import Any, Literal, NamedTuple
 
-from agent_sentinel import deletion_scope, git_probe, paths
+from agent_sentinel import deletion_scope, paths
 from agent_sentinel.command_normalizer import normalization_trace, normalize_for_matching, tokenize
 
 
@@ -181,27 +181,6 @@ def match_sensitive_directory(dir_path: str) -> Rule | None:
     return None
 
 
-# `sed -i`/`--in-place` writes files directly. Unlike the Write/Edit tools,
-# a bash command never passes through the sensitive_path_rules, so an in-place
-# sed would otherwise be a backdoor around that protection while the generic
-# `sed` allow rule waves it through. Reusing match_sensitive_path (rather than
-# duplicating the path patterns here) keeps the two in sync: any path added to
-# sensitive_path_rules is automatically off-limits to `sed -i` too.
-_SED_INPLACE = re.compile(r"^\s*sed\s+(-[a-zA-Z]*i|--in-place)")
-
-
-def match_inplace_write_sensitive(command: str) -> Rule | None:
-    """Deny an in-place ``sed`` edit whose file argument is a sensitive path."""
-    normalized = normalize_for_matching(command)
-    if not (_SED_INPLACE.search(command) or _SED_INPLACE.search(normalized)):
-        return None
-    for token in command.split():
-        hit = match_sensitive_path(token)
-        if hit:
-            return hit
-    return None
-
-
 # The file tools refuse to read, write or edit these paths, so no bash command
 # gets to either: a command that names one copies, moves, deletes, links or reads
 # a secret out of the tree the rules protect, and the tool boundary would be the
@@ -217,21 +196,13 @@ _SECRET_OPERAND_GUIDANCE = (
 
 
 def match_secret_operand(command: str, cwd: str) -> Rule | None:
-    """Deny a command that names a sensitive path, or the directory holding them.
-
-    Every word is a candidate, not just the path arguments: a flag's value
-    (``--env-file=.env``) and a redirection target (``> ~/.ssh/authorized_keys``)
-    reach the file just as well as a positional does.
-    """
-    # Only a command the splitter could read: whitespace-splitting a raw string
-    # cannot tell an operand from a mention, and would deny a heredoc body or a
-    # loop list that merely names `.env`. An unparseable command keeps the deny
-    # regexes and defers to the host reviewer.
-    for word in _operand_candidates(tokenize(command)):
-        if "$" in word or "`" in word:
+    """Deny a command with a shell word that is itself a sensitive path, or the
+    directory holding them. A word with whitespace is text (a message, a command
+    string), left to :func:`match_secret_mention`."""
+    for word in tokenize(command):
+        if any(c.isspace() for c in word):
             continue
-        resolved = paths.resolve(word, cwd)
-        hit = match_sensitive_path(resolved) or match_sensitive_directory(resolved)
+        hit = _secret_path_hit(word, cwd)
         if hit:
             return Rule(
                 name=f"secret-path:{hit.name}",
@@ -241,24 +212,35 @@ def match_secret_operand(command: str, cwd: str) -> Rule | None:
     return None
 
 
-def _operand_candidates(tokens: list[str]) -> Iterator[str]:
-    """Every word a command might reach a file through: the words themselves, and
-    the value side of an ``=`` (``--env-file=.env``, ``ENV_FILE=.env``)."""
-    for token in tokens:
-        stripped = token.lstrip("<>").lstrip("0123456789").lstrip("<>&")
-        yield stripped or token
-        if "=" in token:
-            yield token.split("=", 1)[1]
+# Raw-text split, independent of shlex: a heredoc shlex cannot dequote, `x>.env`
+# and `--env-file=.env` all still expose the path.
+_RAW_SEPARATORS = re.compile(r"[\s'\"`<>=;|&()]+")
+
+
+def match_secret_mention(command: str, cwd: str) -> Rule | None:
+    """Defer any other appearance of a sensitive path in the raw command text, so
+    no form :func:`match_secret_operand` misses is allowed without review."""
+    for piece in filter(None, _RAW_SEPARATORS.split(command)):
+        hit = _secret_path_hit(piece, cwd)
+        if hit:
+            return Rule(name=f"secret-path-mention:{hit.name}", pattern=hit.pattern)
+    return None
+
+
+def _secret_path_hit(word: str, cwd: str) -> Rule | None:
+    # A word with `$` is matched unexpanded: `$HOME/.ssh/x` still ends in a
+    # protected suffix, and a bare `$S` matches nothing.
+    resolved = paths.resolve(word, cwd)
+    return match_sensitive_path(resolved) or match_sensitive_directory(resolved)
 
 
 def reset_cache() -> None:
-    """Reset the rule and probe caches (useful for testing)."""
+    """Reset the rule and temp-root caches (useful for testing)."""
     global _deny_rules, _allow_rules, _defer_rules
     _deny_rules = None
     _allow_rules = None
     _defer_rules = None
     deletion_scope.reset_temp_roots()
-    git_probe.reset_probes()
 
 
 # --- Bash command splitter ----------------------------------------------------
@@ -791,11 +773,7 @@ class BashInspection(NamedTuple):
 
 
 def _match_deny_forms(segment: str, cwd: str) -> Rule | None:
-    return (
-        match_deny(segment)
-        or match_inplace_write_sensitive(segment)
-        or match_secret_operand(segment, cwd)
-    )
+    return match_deny(segment) or match_secret_operand(segment, cwd)
 
 
 def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) -> SegmentVerdict:
@@ -804,8 +782,8 @@ def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) ->
     ``decision`` is one of 'deny', 'defer', 'allow', 'unmatched'.
 
     The deletion scope runs before DEFER so a recursive ``rm`` confined to a temp
-    root is allowed, while one whose scope cannot be resolved is denied rather
-    than left to a reviewer.
+    root is allowed and one aimed at ``/``, the home directory or a temp root is
+    denied.
     """
     deny = _match_deny_forms(segment, cwd)
     if deny:
@@ -815,7 +793,7 @@ def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) ->
         return SegmentVerdict(scope.decision, scope.name, scope.reason)
     if _is_shell_inline_wrapper(segment):
         return SegmentVerdict("allow", "shell-inline-script")
-    defer = match_defer(segment)
+    defer = match_secret_mention(segment, cwd) or match_defer(segment)
     if defer:
         return SegmentVerdict("defer", defer.name)
     allow = match_allow(segment)
@@ -825,7 +803,7 @@ def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) ->
 
 
 def _evaluate_unparseable_segment(command: str, cwd: str) -> SegmentVerdict:
-    deny = _match_deny_forms(command, cwd) or deletion_scope.unparsed_recursive_rm(command)
+    deny = _match_deny_forms(command, cwd)
     if deny:
         return SegmentVerdict("deny", deny.name, deny.reason)
     defer = match_defer(command)

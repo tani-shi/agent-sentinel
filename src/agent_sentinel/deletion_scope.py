@@ -4,10 +4,9 @@ A scratch directory under a temp root and a tracked source tree are both reached
 by ``rm -rf``, and a single rule cannot tell them apart: the targets are often
 written as ``$S`` and the rules match one segment at a time. Resolving the
 targets — through the literal assignments earlier in the same command line —
-turns the one rule into a scoped verdict, so scratch work runs unprompted while
-files git tracks are pushed toward a recoverable deletion. A deletion whose
-scope cannot be resolved is denied: a reviewer cannot see what it reaches
-either.
+turns the one rule into a scoped verdict: scratch work runs unprompted, a
+target no flag may talk past (``/``, the home directory, a temp root) is denied,
+and every other recursive deletion defers to the host reviewer.
 """
 
 from __future__ import annotations
@@ -18,18 +17,10 @@ from collections.abc import Iterator, Mapping
 from functools import cache
 from typing import Literal, NamedTuple
 
-from agent_sentinel import git_probe, paths
+from agent_sentinel import paths
 from agent_sentinel.command_normalizer import path_arguments, tokenize
 
 _RECURSIVE_SHORT_FLAG = re.compile(r"^-[a-zA-Z]*[rR][a-zA-Z]*$")
-# A recursive ``rm`` in a command the splitter could not read, where no target
-# can be resolved at all. Any command position counts, not just the start: one
-# unparseable construct hides every segment of the line from the scope.
-_UNPARSED_RECURSIVE_RM = re.compile(
-    r"(^|[;&|()`]|\b(if|elif|then|do|else)\s)\s*(\S*/)?rm\s+[^\n;&|]*"
-    r"(-[a-zA-Z]*[rR][a-zA-Z]*(\s|$)|--recursive)",
-    re.MULTILINE,
-)
 # Characters the shell expands into path names `rm` never receives verbatim.
 # Braces belong here with the glob metacharacters: `rm -rf {src,tests}` reaches
 # two paths, neither of them the word written on the command line.
@@ -37,7 +28,7 @@ _EXPANSION_CHARS = re.compile(r"[*?\[{]")
 _VARIABLE_REFERENCE = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 _UNRESOLVED = re.compile(r"[$`]")
 # `S=$T` chains resolve in a few passes; a self-referential assignment never
-# does, and an expansion that is still unresolved is denied.
+# does, and an expansion that is still unresolved defers.
 _MAX_EXPANSION_PASSES = 4
 _TMPDIR = "TMPDIR"
 # The variables read from the hook's own environment, which is the shell's: a
@@ -95,14 +86,14 @@ class Verdict(NamedTuple):
     """A scope decision for a whole ``rm`` segment. ``name`` reaches the log and
     the user as the rule name; ``reason`` carries the deny guidance."""
 
-    decision: Literal["deny", "allow"]
+    decision: Literal["deny", "defer", "allow"]
     name: str
     reason: str | None = None
 
 
 _TEMP_SCOPE = Verdict("allow", "rm-temp-scope")
-_IGNORED_PATH = Verdict("allow", "rm-ignored-path")
 _MISSING_PATH = Verdict("allow", "rm-missing-path")
+REVIEW = Verdict("defer", "rm-recursive")
 
 _TEMP_ROOT = Verdict(
     "deny",
@@ -116,33 +107,12 @@ _ROOT_TARGET = Verdict(
     "Wipes the whole filesystem or the whole home directory. Name the specific "
     "directory to remove — not / or the home directory itself.",
 )
-_TRACKED_PATH = Verdict(
-    "deny",
-    "rm-tracked-path",
-    "Deletes files git tracks, along with any uncommitted change in them. Stage "
-    "the deletion with `git rm -r <path>`, which leaves the content in HEAD to "
-    "restore from — not rm -rf.",
-)
-_UNTRACKED_PATH = Verdict(
-    "deny",
-    "rm-untracked-path",
-    "Deletes untracked files, which no commit can restore. Use `trash <path>` "
-    "to move them to the Trash for recovery — not rm -rf.",
-)
-UNRESOLVED_SCOPE = Verdict(
-    "deny",
-    "rm-unresolved-scope",
-    "Recursive deletion whose targets cannot be resolved to a temp directory or "
-    "a git-classified path in the workspace. Name literal paths inside the "
-    "workspace, use `trash <path>` for untracked files, or have the user run it.",
-)
 
 
 def classify(segment: str, cwd: str, assignments: Mapping[str, str]) -> Verdict | None:
     """Scope verdict for a recursive ``rm`` segment, or ``None`` for a
-    non-recursive or non-``rm`` segment, which the ordinary rules decide. An
-    unresolved target, or one outside both the temp roots and the working
-    directory, is :data:`UNRESOLVED_SCOPE`.
+    non-recursive or non-``rm`` segment, which the ordinary rules decide. A
+    target that is neither denied nor allowed below is :data:`REVIEW`.
 
     ``assignments`` maps variable names to the literal values assigned earlier in
     the same command line.
@@ -154,21 +124,13 @@ def classify(segment: str, cwd: str, assignments: Mapping[str, str]) -> Verdict 
     if not words or not _is_recursive(tokens[1:]):
         return None
 
-    first_allowed: Verdict | None = None
-    for word in words:
-        verdict = _classify_target(word, cwd)
-        if verdict is None:
-            return UNRESOLVED_SCOPE
-        if verdict.decision == "deny":
-            return verdict
-        first_allowed = first_allowed or verdict
-    return first_allowed
-
-
-def unparsed_recursive_rm(command: str) -> Verdict | None:
-    """:data:`UNRESOLVED_SCOPE` for a recursive ``rm`` the splitter could not
-    read."""
-    return UNRESOLVED_SCOPE if _UNPARSED_RECURSIVE_RM.search(command) else None
+    verdicts = [_classify_target(word, cwd) for word in words]
+    denied = next((v for v in verdicts if v is not None and v.decision == "deny"), None)
+    if denied is not None:
+        return denied
+    if None in verdicts:
+        return REVIEW
+    return verdicts[0]
 
 
 def _is_recursive(args: list[str]) -> bool:
@@ -216,17 +178,19 @@ def _classify_target(word: str, cwd: str) -> Verdict | None:
     if not paths.is_within(resolved, os.path.realpath(cwd)):
         return None
     if not os.path.lexists(resolved):
-        # Nothing to delete. Without this, `rm -rf build && mkdir build` would
-        # be denied on every project whose build directory is not there yet.
+        # Nothing to delete: `rm -rf build && mkdir build` on a fresh checkout.
         return _MISSING_PATH
-    return _classify_project_target(resolved, cwd)
+    return None
 
 
 def _is_home_or_filesystem_root(resolved: str) -> bool:
     """True for the two targets no flag or quoting may talk past. The
     ``rm-rf-root`` deny rule reads the raw command line, where a flag between the
     recursive flag and the target (``rm -rf --no-preserve-root /``) or a quoted
-    ``"$HOME"`` slips by it; the resolved target does not hide either form."""
+    ``"$HOME"`` slips by it; the resolved target does not hide either form.
+    ``<root>/*`` stands for the root too, as it does for a temp root."""
+    if os.path.basename(resolved) == "*":
+        resolved = os.path.dirname(resolved)
     if resolved == os.sep:
         return True
     home = os.path.expanduser("~")
@@ -243,22 +207,6 @@ def _classify_temp_target(resolved: str, root: str) -> Verdict | None:
     if not _expands_at_root_level(resolved, root):
         return _TEMP_SCOPE
     return _TEMP_ROOT if os.path.relpath(resolved, root) == "*" else None
-
-
-def _classify_project_target(resolved: str, cwd: str) -> Verdict | None:
-    if not git_probe.in_repository(cwd):
-        return None
-    tracked = git_probe.tracks(cwd, resolved)
-    if tracked is None:
-        return None
-    if tracked:
-        return _TRACKED_PATH
-    ignored = git_probe.ignores(cwd, resolved)
-    if ignored is None:
-        return None
-    if ignored:
-        return _IGNORED_PATH
-    return _UNTRACKED_PATH
 
 
 def _expands_at_root_level(resolved: str, root: str) -> bool:
