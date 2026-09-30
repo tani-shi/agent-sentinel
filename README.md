@@ -129,7 +129,7 @@ Compound Bash commands are split into segments at pipes, `&&`, `;`, substitution
 
 ### Sensitive paths
 
-On Claude Code, Bash and file-tool calls that touch `.env`, `.ssh/`, `.aws/`, `.kube/config`, private keys, cloud credentials, package-registry credentials, and similar paths are denied. For Codex `apply_patch`, agent-sentinel extracts every Add, Update, Delete, and Move target and denies the patch if any target matches, or if the targets cannot be extracted.
+On Claude Code, Bash and file-tool calls that touch `.env`, `.ssh/`, `.aws/`, `.kube/config`, private keys, cloud credentials, package-registry credentials, and similar paths are denied. A Bash word without whitespace that is itself such a path (`cat .env`, `> ~/.ssh/config`) is denied; any other appearance in the command text, such as `--env-file=.env`, a quoted command string, or a commit message, defers to the host reviewer. For Codex `apply_patch`, agent-sentinel extracts every Add, Update, Delete, and Move target and denies the patch if any target matches, or if the targets cannot be extracted.
 
 The Claude Code installer's `permissions.deny` entries are enforced by the host, so verify that enforcement separately.
 
@@ -137,12 +137,9 @@ The Claude Code installer's `permissions.deny` entries are enforced by the host,
 
 | Target | Decision |
 |---|---|
-| Paths that do not exist yet or are ignored by Git | ALLOW |
-| Tracked paths | DENY, suggesting `git rm -r` |
-| Untracked paths | DENY, suggesting `trash` |
-| Unresolvable variables or globs, or targets outside the workspace | DENY |
-
-`git restore` that overwrites the worktree and forced `git switch` are also denied: a reviewer cannot recover the uncommitted work they discard.
+| `/`, the home directory, or a temp root itself | DENY |
+| Paths under a temp root, or workspace paths that do not exist yet | ALLOW |
+| Anything else, including unresolvable variables or globs | DEFER |
 
 ## CLI
 
@@ -221,7 +218,6 @@ src/agent_sentinel/
 ├── rule_engine.py        # Static rule matching
 ├── command_normalizer.py # Prefix-option and wrapper stripping for rule matching
 ├── deletion_scope.py     # Recursive-deletion classification
-├── git_probe.py          # Read-only Git tracked/ignored queries
 ├── patch_paths.py        # apply_patch target extraction
 ├── hook_io.py            # Claude Code hook protocol
 ├── codex_io.py           # Codex hook protocol

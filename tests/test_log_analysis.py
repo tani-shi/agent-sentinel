@@ -48,7 +48,7 @@ def test_replay_preserves_native_defer():
 
 def test_replay_detects_changed_policy_decision():
     event = _bash_event(
-        "git restore src/app.py",
+        "sudo ls",
         result="defer",
         stage="CODEX_NATIVE",
         owner="native",
@@ -63,7 +63,7 @@ def test_replay_detects_changed_policy_decision():
 
 def test_audit_detects_unenforced_deny():
     event = _bash_event(
-        "git restore src/app.py",
+        "sudo ls",
         result="defer",
         stage="CODEX_NATIVE",
         owner="native",

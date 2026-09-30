@@ -182,16 +182,19 @@ class TestDenyRules:
         assert match_deny("git push -u origin main") is None
 
     def test_env_write(self):
-        assert match_deny("echo SECRET=foo > .env") is not None
-        assert match_deny("echo SECRET=foo >> .env") is not None
-        assert match_deny("tee .env") is not None
-        assert match_deny("echo SECRET=foo > .env.production") is not None
-        assert match_deny("tee .env.production") is not None
+        for cmd in (
+            "echo SECRET=foo > .env",
+            "echo SECRET=foo >> .env",
+            "tee .env",
+            "echo SECRET=foo > .env.production",
+            "tee .env.production",
+        ):
+            assert evaluate_command(cmd, "/proj")[0] == "deny", cmd
 
     def test_env_write_template_files_not_denied(self):
         for suffix in ("example", "sample", "template", "dist"):
-            assert match_deny(f"echo FOO=bar > .env.{suffix}") is None
-            assert match_deny(f"tee .env.{suffix}") is None
+            assert evaluate_command(f"echo FOO=bar > .env.{suffix}", "/proj")[0] != "deny"
+            assert evaluate_command(f"tee .env.{suffix}", "/proj")[0] != "deny"
 
     def test_safe_commands_not_denied(self):
         assert match_deny("ls -la") is None
@@ -959,7 +962,6 @@ class TestSecretOperand:
             # Write over, or into, a protected path
             "echo x > ~/.ssh/authorized_keys",
             "chmod 600 ~/.ssh/id_rsa",
-            "docker run --env-file=.env img",
             "rm -rf terraform.tfvars",
             "rm -rf *.pem",
             "rm ~/.ssh/id_rsa",
@@ -990,10 +992,10 @@ class TestSecretOperand:
         assert evaluate_command(command, self.CWD)[0] != "deny", command
 
     def test_unresolved_target_is_not_read_as_a_secret(self):
-        # `$S` may hold anything; the deletion scope denies it as unresolved.
+        # `$S` may hold anything; the deletion scope defers it to the reviewer.
         decision, reason = evaluate_command("rm -rf $S", self.CWD)
-        assert decision == "deny"
-        assert "rm-unresolved-scope" in reason
+        assert decision == "defer"
+        assert "rm-recursive" in reason
 
     def test_unparseable_command_defers(self):
         # Whitespace-splitting a raw string cannot tell an operand from a mention,
@@ -1380,10 +1382,8 @@ class TestDeferRules:
 
     # --- rm recursive ---
     def test_rm_recursive(self):
-        # An unparseable recursive rm has no resolvable target, so it is denied.
         for cmd in ("rm -rf dir/", "rm -r dir/", "rm -Rf dir/", "rm --recursive dir/"):
-            assert deletion_scope.unparsed_recursive_rm(cmd) is not None, cmd
-        assert deletion_scope.unparsed_recursive_rm("rm file.txt") is None
+            assert evaluate_command(f'{cmd}; echo "unclosed', "/proj")[0] == "defer", cmd
 
     def test_rm_simple_not_deferred(self):
         assert match_defer("rm file.txt") is None
@@ -1419,13 +1419,13 @@ class TestDeferRules:
         assert match_defer("git checkout HEAD~3") is not None
 
     def test_git_restore_worktree(self):
-        assert match_deny("git restore .") is not None
-        assert match_deny("git restore --worktree .") is not None
-        assert match_deny("git restore --staged --worktree .") is not None
-        assert match_deny("git restore -SW file.txt") is not None
-        assert match_deny("git restore --source=HEAD~1 file.txt") is not None
-        assert match_deny("git restore -s HEAD~1 file.txt") is not None
-        assert match_deny("git -C /tmp/repo restore .") is not None
+        assert match_defer("git restore .") is not None
+        assert match_defer("git restore --worktree .") is not None
+        assert match_defer("git restore --staged --worktree .") is not None
+        assert match_defer("git restore -SW file.txt") is not None
+        assert match_defer("git restore --source=HEAD~1 file.txt") is not None
+        assert match_defer("git restore -s HEAD~1 file.txt") is not None
+        assert match_defer("git -C /tmp/repo restore .") is not None
 
     def test_git_restore_staged_not_deferred(self):
         assert match_defer("git restore --staged .") is None
@@ -1434,10 +1434,10 @@ class TestDeferRules:
         assert match_defer("git restore --staged --source=HEAD~1 file.txt") is None
 
     def test_git_switch_force(self):
-        assert match_deny("git switch -f main") is not None
-        assert match_deny("git switch --force main") is not None
-        assert match_deny("git switch --discard-changes main") is not None
-        assert match_deny("git -C /tmp/repo switch -f main") is not None
+        assert match_defer("git switch -f main") is not None
+        assert match_defer("git switch --force main") is not None
+        assert match_defer("git switch --discard-changes main") is not None
+        assert match_defer("git -C /tmp/repo switch -f main") is not None
 
     def test_git_switch_not_deferred(self):
         assert match_defer("git switch main") is None
@@ -2177,8 +2177,8 @@ class TestEvaluateCommand:
     def test_negated_rm_rf_root_denied(self):
         assert match_deny("! rm -rf /") is not None
 
-    def test_loop_body_rm_recursive_denied(self):
-        assert evaluate_command('do rm -rf "$x"', "/proj")[0] == "deny"
+    def test_loop_body_rm_recursive_deferred(self):
+        assert evaluate_command('do rm -rf "$x"', "/proj")[0] == "defer"
 
 
 class TestCodeExecution:
@@ -2280,14 +2280,13 @@ class TestDestructiveGitAsks:
             "git checkout -- .",
             "git reset --hard",
             "git clean -fd",
+            "git restore .",
+            "git restore -SW f",
+            "git switch -f main",
         ],
     )
     def test_destructive_commands_defer(self, cmd):
         assert evaluate_command(cmd, self.CWD)[0] == "defer", cmd
-
-    @pytest.mark.parametrize("cmd", ["git restore .", "git restore -SW f", "git switch -f main"])
-    def test_worktree_overwrites_denied(self, cmd):
-        assert evaluate_command(cmd, self.CWD)[0] == "deny", cmd
 
     def test_unparseable_command_defers(self):
         assert evaluate_command('git checkout main; echo "unclosed', self.CWD)[0] == "defer"

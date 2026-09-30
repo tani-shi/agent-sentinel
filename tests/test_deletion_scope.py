@@ -1,27 +1,23 @@
-import shutil
-import subprocess
 from functools import cache
 
 import pytest
 
-from agent_sentinel import deletion_scope, git_probe
-from agent_sentinel.deletion_scope import UNRESOLVED_SCOPE, classify
+from agent_sentinel import deletion_scope
+from agent_sentinel.deletion_scope import REVIEW, classify
 from agent_sentinel.rule_engine import evaluate_command
 
 
 @pytest.fixture(autouse=True)
-def clear_probe_cache():
+def clear_temp_roots():
     deletion_scope.reset_temp_roots()
-    git_probe.reset_probes()
     yield
     deletion_scope.reset_temp_roots()
-    git_probe.reset_probes()
 
 
 @pytest.fixture
 def no_temp_roots(monkeypatch):
     """Suppress the temp scope: pytest's tmp_path lives under a temp root, where
-    the temp scope would answer before git is ever consulted.
+    the temp scope would answer before the project scope.
 
     The replacement is cached like the real probe, so the autouse reset still
     finds a ``cache_clear`` on it.
@@ -85,11 +81,11 @@ class TestTempScope:
             ("rm -rf `cat target`", {}),
         ],
     )
-    def test_unresolved_target_denied(self, segment, assignments):
-        assert classify(segment, self.CWD, assignments) == UNRESOLVED_SCOPE
+    def test_unresolved_target_deferred(self, segment, assignments):
+        assert classify(segment, self.CWD, assignments) == REVIEW
 
-    def test_one_target_outside_denies_all(self):
-        assert classify("rm -rf /tmp/probe /usr/local", self.CWD, {}) == UNRESOLVED_SCOPE
+    def test_one_target_outside_defers_all(self):
+        assert classify("rm -rf /tmp/probe /usr/local", self.CWD, {}) == REVIEW
 
     @pytest.mark.parametrize(
         "segment",
@@ -106,8 +102,8 @@ class TestTempScope:
         assert classify("rm -rf -- /tmp/-weird", self.CWD, {}) == deletion_scope._TEMP_SCOPE
 
     @pytest.mark.parametrize("target", ["/tmp/sess-*", "/tmp/sess-*/cache", "/tmp/*/cache"])
-    def test_partial_pattern_at_the_root_denied(self, target):
-        assert classify(f"rm -rf {target}", self.CWD, {}) == UNRESOLVED_SCOPE
+    def test_partial_pattern_at_the_root_deferred(self, target):
+        assert classify(f"rm -rf {target}", self.CWD, {}) == REVIEW
 
     @pytest.mark.parametrize(
         "segment",
@@ -145,7 +141,7 @@ class TestRootTarget:
         assert classify(segment, self.CWD, {}) == deletion_scope._ROOT_TARGET
 
     def test_path_under_home_is_not_the_root_target(self):
-        assert classify("rm -rf $HOME/projects/build", self.CWD, {}) == UNRESOLVED_SCOPE
+        assert classify("rm -rf $HOME/projects/build", self.CWD, {}) == REVIEW
 
 
 class TestUnexpandedWord:
@@ -157,85 +153,39 @@ class TestUnexpandedWord:
     @pytest.mark.parametrize(
         "target", ["{src,tests}", "src/{a,b}", "/tmp/{a,b}", "*.log", "build/*"]
     )
-    def test_expanded_word_denied(self, target):
-        assert classify(f"rm -rf {target}", self.CWD, {}) == UNRESOLVED_SCOPE
+    def test_expanded_word_deferred(self, target):
+        assert classify(f"rm -rf {target}", self.CWD, {}) == REVIEW
 
     @pytest.mark.parametrize("target", ["/etc/absent-xyz", "/usr/local/absent-xyz"])
-    def test_missing_path_outside_the_working_directory_denied(self, target):
-        assert classify(f"rm -rf {target}", self.CWD, {}) == UNRESOLVED_SCOPE
+    def test_missing_path_outside_the_working_directory_deferred(self, target):
+        assert classify(f"rm -rf {target}", self.CWD, {}) == REVIEW
 
 
 class TestProjectScope:
-    """Inside the working directory, git decides what is recoverable."""
+    """Inside the working directory only a missing target is decided; an
+    existing one is left to the reviewer."""
 
     @pytest.fixture
-    def repo(self, tmp_path, no_temp_roots):
-        if shutil.which("git") is None:
-            pytest.skip("git not available")
-        run = lambda *args: subprocess.run(  # noqa: E731
-            ["git", "-C", str(tmp_path), *args], check=True, capture_output=True
-        )
-        run("init")
-        run("config", "user.email", "test@example.com")
-        run("config", "user.name", "test")
+    def project(self, tmp_path, no_temp_roots):
         (tmp_path / "src").mkdir()
-        (tmp_path / "src" / "main.py").write_text("x = 1\n")
-        (tmp_path / ".gitignore").write_text("build/\n.env\n")
-        run("add", "-A")
-        run("commit", "-m", "initial")
-        (tmp_path / "build").mkdir()
-        (tmp_path / "build" / "out.js").write_text("\n")
-        (tmp_path / "draft").mkdir()
-        (tmp_path / "draft" / "notes.md").write_text("\n")
         (tmp_path / ".env").write_text("SECRET=1\n")
         return tmp_path
 
-    def test_tracked_path_denied(self, repo):
-        assert classify("rm -rf src", str(repo), {}) == deletion_scope._TRACKED_PATH
+    @pytest.mark.parametrize("target", ["src", ".", "./*"])
+    def test_existing_target_deferred(self, project, target):
+        assert classify(f"rm -rf {target}", str(project), {}) == REVIEW
 
-    def test_repository_root_denied(self, repo):
-        assert classify("rm -rf .", str(repo), {}) == deletion_scope._TRACKED_PATH
+    def test_secret_denied_before_the_scope(self, project):
+        assert classify("rm -rf .env", str(project), {}) == REVIEW
+        assert evaluate_command("rm -rf .env", str(project))[0] == "deny"
+        assert evaluate_command("rm -rf src .env", str(project))[0] == "deny"
 
-    def test_ignored_path_allowed(self, repo):
-        assert classify("rm -rf build", str(repo), {}) == deletion_scope._IGNORED_PATH
+    def test_missing_path_allowed(self, project):
+        assert classify("rm -rf dist", str(project), {}) == deletion_scope._MISSING_PATH
 
-    def test_ignored_secret_denied(self, repo):
-        # `.env` is ignored like build output, so the scope alone would allow it;
-        # the deny stage runs first and stops every secret before it is asked.
-        assert classify("rm -rf .env", str(repo), {}) == deletion_scope._IGNORED_PATH
-        assert evaluate_command("rm -rf .env", str(repo))[0] == "deny"
-        assert evaluate_command("rm -rf build .env", str(repo))[0] == "deny"
-
-    def test_missing_path_allowed(self, repo):
-        assert classify("rm -rf dist", str(repo), {}) == deletion_scope._MISSING_PATH
-
-    def test_untracked_path_denied(self, repo):
-        assert classify("rm -rf draft", str(repo), {}) == deletion_scope._UNTRACKED_PATH
-
-    def test_glob_target_denied(self, repo):
-        assert classify("rm -rf ./*", str(repo), {}) == UNRESOLVED_SCOPE
-
-    def test_declined_probe_denied(self, repo, monkeypatch):
-        # A probe that never ran must not read as "not tracked", which would let
-        # an ignore rule over the same path answer allow.
-        monkeypatch.setattr(git_probe, "_git", lambda cwd, *args: None)
-        git_probe.reset_probes()
-        assert classify("rm -rf build", str(repo), {}) == UNRESOLVED_SCOPE
-
-    def test_outside_repository_denied(self, tmp_path, no_temp_roots):
-        (tmp_path / "data").mkdir()
-        assert classify("rm -rf data", str(tmp_path), {}) == UNRESOLVED_SCOPE
-
-    @pytest.mark.parametrize("command", ["git rm -r src", "trash draft"])
-    def test_guided_alternative_allowed(self, command, repo):
-        # The tracked and untracked deny reasons send the user to these; a defer
-        # rule added over either would strand that guidance.
-        assert evaluate_command(command, str(repo))[0] == "allow", command
-
-    def test_tracked_path_wins_over_allowed_sibling(self, repo):
-        result = evaluate_command(f"rm -rf {repo}/absent && rm -rf {repo}/src", str(repo))
-        assert result[0] == "deny"
-        assert "git rm -r" in result[1]
+    def test_existing_target_wins_over_allowed_sibling(self, project):
+        result = evaluate_command(f"rm -rf {project}/absent && rm -rf {project}/src", str(project))
+        assert result == ("defer", "Matched defer rule: rm-recursive")
 
 
 class TestWiredIntoEvaluation:
@@ -258,7 +208,7 @@ class TestWiredIntoEvaluation:
         ],
     )
     def test_contested_assignment_resolves_to_nothing(self, command):
-        assert evaluate_command(command, self.CWD)[0] == "deny", command
+        assert evaluate_command(command, self.CWD)[0] == "defer", command
 
     def test_repeated_identical_assignment_still_resolves(self):
         decision, _ = evaluate_command("S=/tmp/probe; S=/tmp/probe; rm -rf $S", self.CWD)
@@ -266,7 +216,7 @@ class TestWiredIntoEvaluation:
 
     def test_assignment_after_the_deletion_is_not_used(self):
         decision, _ = evaluate_command("rm -rf $S; S=/tmp/probe", self.CWD)
-        assert decision == "deny"
+        assert decision == "defer"
 
     def test_quoted_assignment_value_resolved(self):
         decision, _ = evaluate_command('S="/tmp/probe"; rm -rf "$S"/sub', self.CWD)
@@ -274,7 +224,7 @@ class TestWiredIntoEvaluation:
 
     def test_command_substitution_value_not_used(self):
         decision, _ = evaluate_command("S=$(mktemp -d); rm -rf $S", self.CWD)
-        assert decision == "deny"
+        assert decision == "defer"
 
     def test_root_deletion_still_denied(self):
         assert evaluate_command("S=/tmp/probe; rm -rf /", self.CWD)[0] == "deny"
@@ -284,8 +234,8 @@ class TestWiredIntoEvaluation:
         assert decision == "deny"
         assert "not the root itself" in reason
 
-    def test_recursive_rm_outside_scope_denied(self):
-        assert evaluate_command("rm -rf /usr/local", self.CWD)[0] == "deny"
+    def test_recursive_rm_outside_scope_deferred(self):
+        assert evaluate_command("rm -rf /usr/local", self.CWD)[0] == "defer"
 
     def test_loop_body_prefix_still_scoped(self):
         assert evaluate_command("do rm -rf /tmp/probe", self.CWD)[0] == "allow"

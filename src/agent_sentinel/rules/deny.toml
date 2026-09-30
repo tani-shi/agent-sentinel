@@ -9,14 +9,12 @@ env_template_suffixes = "example|sample|template|dist"
 
 # --- Command Deny Rules ---
 
-# This rule is the unparseable-command prefilter, which sees only the raw string,
-# so a flag before the target (`rm -rf --no-preserve-root /`) or a quoted
-# `"$HOME"` is beyond it. A command the splitter can read reaches the deletion
-# scope, which resolves the target and covers those forms along with `$TMPDIR`
-# and `<root>/*`.
+# The only root-deletion check an unparseable command gets, so it tolerates flags
+# around the target and a quoted `"$HOME"`. A command the splitter can read also
+# reaches the deletion scope, which resolves `$TMPDIR` and `<root>/*` too.
 [[rules]]
 name = "rm-rf-root"
-command_regex = '''rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+)(/\s*$|/\s+|~\s*$|~\s+|\$HOME\s*$|\$HOME\s+|(/private)?/tmp/?\s*$|/var/tmp/?\s*$)'''
+command_regex = '''rm\s+(-\S+\s+)*?(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\s+(-\S+\s+)*["']?((/|~/?|\$HOME/?|\$\{HOME\}/?)["']?(/?\*)?|((/private)?/tmp/?|/var/tmp/?)["']?)(\s|;|&|\||$)'''
 
 [[rules]]
 name = "sudo"
@@ -92,28 +90,6 @@ command_regex = '''git\s+push(?=\s)(?=.*\s(--delete|-d)\b).*\b(main|master)\b'''
 name = "refspec-delete-main"
 command_regex = '''git\s+push\s+.*\s:(main|master)\b'''
 
-# Worktree-overwriting git operations destroy uncommitted work that no reviewer
-# can restore. `\A` keeps a heredoc or commit-message line from matching.
-# `-S` is `--staged` while `-s` is `--source`, and rules compile
-# case-sensitively: widening to `-[sS]` would exempt a worktree-overwriting
-# `git restore -s <rev>`.
-[[rules]]
-name = "git-restore-worktree"
-command_regex = '''\A\s*git\s+(-C\s+\S+\s+)?restore(?=\s)(?!(?=.*\s(--staged|-S)(\s|$))(?!.*\s(--worktree|-W)(\s|$)))'''
-reason = "Restoring into the working tree overwrites uncommitted work. Save changes with `git stash push --include-untracked` before restoring, use `git restore --staged` to change only the index, or have the user run it."
-
-# `git switch -C` (force-create a branch) is not here: it leaves the worktree
-# alone, and the branch move is recoverable through the reflog. The `(\s|$)`
-# terminator keeps `--force-create` — the long spelling of `-C` — unmatched.
-[[rules]]
-name = "git-switch-force"
-command_regex = '''\A\s*git\s+(-C\s+\S+\s+)?switch(?=\s)(?=.*\s(--force|--discard-changes|-[a-zA-Z]*f[a-zA-Z]*)(\s|$))'''
-reason = "Forced branch switching discards uncommitted work. Save changes with `git stash push --include-untracked` first, or have the user run it."
-
-[[rules]]
-name = "env-write"
-command_regex = '''((?:>|>>)\s*|tee\s+.*)\.env(\s|$|\.(?!(?:@env_template_suffixes@)(?:\s|$)))'''
-
 # Dynamic-linker hijacking: setting LD_PRELOAD / DYLD_INSERT_LIBRARIES (and
 # their LIBRARY_PATH siblings) injects attacker code into every dynamically
 # linked binary launched in the same shell. The variable-assignment and
@@ -182,7 +158,7 @@ reason = "Broadcast/pattern kills terminate unintended processes. Target a speci
 # --- Sensitive Path Deny Rules (shared by Read, Write, Edit) ---
 #
 # path_regex guards the paths the hook sees (outside-cwd reads, `.claude/`
-# files, and the `sed -i` backdoor check). The PreToolUse hook is not
+# files, and every word of a Bash command). The PreToolUse hook is not
 # guaranteed to fire on the sub-agent and background paths, so in-project
 # files are also protected by permissions.deny entries: path_glob is the
 # gitignore-style equivalent of path_regex that the installer expands into

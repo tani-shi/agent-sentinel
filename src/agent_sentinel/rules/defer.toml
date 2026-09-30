@@ -297,6 +297,17 @@ reason = "`git checkout` bundles branch switching with destructive file restore.
 name = "git-clean"
 command_regex = '''^\s*git\s+(-C\s+\S+\s+)?clean\s+'''
 
+# A worktree restore; `--staged` alone touches only the index. `-S` is
+# `--staged` while `-s` is `--source`: widening to `-[sS]` would exempt
+# `git restore -s <rev>`.
+[[rules]]
+name = "git-restore-worktree"
+command_regex = '''^\s*git\s+(-C\s+\S+\s+)?restore(?=\s)(?!(?=.*\s(--staged|-S)(\s|$))(?!.*\s(--worktree|-W)(\s|$)))'''
+
+[[rules]]
+name = "git-switch-force"
+command_regex = '''^\s*git\s+(-C\s+\S+\s+)?switch(?=\s)(?=.*\s(--force|--discard-changes|-[a-zA-Z]*f[a-zA-Z]*)(\s|$))'''
+
 [[rules]]
 name = "osascript"
 command_regex = '''^\s*osascript\s+'''

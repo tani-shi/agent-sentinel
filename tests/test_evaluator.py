@@ -156,13 +156,13 @@ class TestCodexEvaluation:
         result = evaluate_codex(
             {
                 "tool_name": "Bash",
-                "tool_input": {"command": "rm -rf $TARGET"},
+                "tool_input": {"command": "rm -rf /tmp/*"},
                 "cwd": "/tmp",
             }
         )
         assert result is not None
         assert result[0] == "deny"
-        assert "trash <path>" in result[1]
+        assert "rm-temp-root" in result[1]
 
     @pytest.mark.parametrize(
         "command",
