@@ -193,6 +193,11 @@ _SECRET_OPERAND_GUIDANCE = (
     "create such a file, so nothing here needs to touch one; have the user do it "
     "themselves, or work from a template like `.env.example`."
 )
+_ENV_OPERAND_GUIDANCE = (
+    "Names an env file, which no bash command may read, copy, move or delete. "
+    "Use the Read tool on it instead: it returns the file with secret values "
+    "masked."
+)
 
 
 def match_secret_operand(command: str, cwd: str) -> Rule | None:
@@ -207,7 +212,9 @@ def match_secret_operand(command: str, cwd: str) -> Rule | None:
             return Rule(
                 name=f"secret-path:{hit.name}",
                 pattern=hit.pattern,
-                reason=_SECRET_OPERAND_GUIDANCE,
+                reason=(
+                    _ENV_OPERAND_GUIDANCE if hit.name == "env-files" else _SECRET_OPERAND_GUIDANCE
+                ),
             )
     return None
 

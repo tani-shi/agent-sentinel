@@ -18,6 +18,8 @@ def write_output(
     decision: str,
     reason: str,
     stdout: TextIO | None = None,
+    *,
+    updated_input: dict[str, Any] | None = None,
 ) -> None:
     """Write the PreToolUse JSON response to stdout.
 
@@ -29,12 +31,13 @@ def write_output(
     This function writes a hook response; it cannot observe the host outcome.
     """
     stream = stdout if stdout is not None else sys.stdout
-    output = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": decision,
-            "permissionDecisionReason": reason,
-        }
+    specific: dict[str, Any] = {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": decision,
+        "permissionDecisionReason": reason,
     }
+    if updated_input is not None:
+        specific["updatedInput"] = updated_input
+    output = {"hookSpecificOutput": specific}
     json.dump(output, stream)
     stream.write("\n")

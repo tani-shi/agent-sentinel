@@ -366,14 +366,14 @@ class TestFileToolEvaluation:
     """Read, Write, and Edit share the same sensitive path rules. Other paths
     defer to the host, which approves working-directory access itself."""
 
-    def test_read_deny_env_file(self):
+    def test_read_masks_env_file(self):
         hook_input = {
             "tool_name": "Read",
             "tool_input": {"file_path": "/project/.env"},
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "deny"
-        assert stage == "RULE_DENY"
+        assert decision == "allow"
+        assert stage == "MASKED_READ"
 
     def test_read_defer_normal_file(self):
         hook_input = {
@@ -419,14 +419,14 @@ class TestFileToolEvaluation:
 
 
 class TestFileToolWindows:
-    def test_read_deny_env_file_windows(self):
+    def test_read_masks_env_file_windows(self):
         hook_input = {
             "tool_name": "Read",
             "tool_input": {"file_path": r"C:\Users\user\project\.env"},
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "deny"
-        assert stage == "RULE_DENY"
+        assert decision == "allow"
+        assert stage == "MASKED_READ"
 
     def test_read_defer_normal_file_windows(self):
         hook_input = {

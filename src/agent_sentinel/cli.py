@@ -12,6 +12,7 @@ from typing import IO
 from agent_sentinel import (
     codex_installer,
     codex_io,
+    env_mask,
     evaluator,
     hook_io,
     installer,
@@ -361,6 +362,11 @@ def _run_hook(*, host: str, explain: bool = False) -> None:
         return
 
     decision, reason, stage = result
+    updated_input = None
+    if host == "claude" and stage == evaluator.MASKED_READ_STAGE:
+        updated_input, failure = _masked_read_input(hook_input)
+        if failure:
+            decision, reason, stage = "deny", failure, "EVALUATION_ERROR"
     logger.log_evaluation(
         hook_input, decision, reason, stage, elapsed_ms, host=host, owner=_owner(decision)
     )
@@ -372,7 +378,22 @@ def _run_hook(*, host: str, explain: bool = False) -> None:
     if host == "codex":
         codex_io.write_output(decision, reason, event=event)
     elif decision != "defer":
-        hook_io.write_output(decision, reason)
+        hook_io.write_output(decision, reason, updated_input=updated_input)
+
+
+def _masked_read_input(hook_input: dict) -> tuple[dict | None, str | None]:
+    """The Read input redirected to a masked copy, or the reason none could be
+    written. Any failure denies the Read rather than letting the original through."""
+    tool_input = hook_input.get("tool_input", {})
+    try:
+        masked = env_mask.write_masked_copy(
+            str(tool_input.get("file_path", "")),
+            hook_input.get("cwd", "."),
+            str(hook_input.get("session_id", "")),
+        )
+    except Exception as error:
+        return None, f"Could not mask {tool_input.get('file_path', '')}: {error}"
+    return {**tool_input, "file_path": masked}, None
 
 
 def _run_log(args: argparse.Namespace) -> None:
