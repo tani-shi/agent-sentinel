@@ -20,7 +20,7 @@ The hook is an additional guardrail, not a replacement for the host sandbox or p
 | Capability | Claude Code | Codex |
 |---|---|---|
 | Bash | PreToolUse DENY / ALLOW; `Monitor` commands too | PreToolUse DENY, PermissionRequest ALLOW, execution-rule `forbidden` |
-| File operations | Read / Write / Edit: DENY for sensitive paths, otherwise DEFER | `apply_patch`: DENY for sensitive paths |
+| File operations | Read / Write / Edit: DENY for sensitive paths, otherwise DEFER; Read of an env file: masked copy | `apply_patch`: DENY for sensitive paths |
 | Sensitive paths | Hook and `permissions.deny` | Hook inspection of `apply_patch` |
 | Deferred calls | Auto mode classifier (a prompt in `default` mode) | Configured `approvals_reviewer` |
 | Installation target | `~/.claude/settings.json` | `~/.codex/hooks.json` and `~/.codex/rules/agent-sentinel.rules` |
@@ -132,6 +132,20 @@ Compound Bash commands are split into segments at pipes, `&&`, `;`, substitution
 On Claude Code, Bash and file-tool calls that touch `.env`, `.ssh/`, `.aws/`, `.kube/config`, private keys, cloud credentials, package-registry credentials, and similar paths are denied. A Bash word without whitespace that is itself such a path (`cat .env`, `> ~/.ssh/config`) is denied; any other appearance in the command text, such as `--env-file=.env`, a quoted command string, or a commit message, defers to the host reviewer. For Codex `apply_patch`, agent-sentinel extracts every Add, Update, Delete, and Move target and denies the patch if any target matches, or if the targets cannot be extracted.
 
 The Claude Code installer's `permissions.deny` entries are enforced by the host, so verify that enforcement separately.
+
+#### Masked env file reads
+
+On Claude Code, a Read of an env file (the `env-files` rule: `.env`, `.env.local`, `.env.stg02`, …) is redirected through PreToolUse `updatedInput` to a copy under `$TMPDIR/agent-sentinel/masked/<session>/`, so the agent can see keys and non-secret values without receiving secrets. The copy keeps the original's lines; secret values become `<masked len=N>`:
+
+- Values of keys whose name contains a word such as `PASSWORD`, `SECRET`, `TOKEN`, `KEY`, `AUTH`, `CRED`, or `SALT`
+- Values in a known credential format (AWS keys, JWTs, Slack, GitHub, Stripe and other API tokens, private keys)
+- Tokens that look random (long, mixing letters and digits), and multi-line quoted values
+- The userinfo, query, and fragment of URLs; the scheme, host, port, and path stay visible
+- Commented-out assignments, masked like live ones, and lines that do not parse
+
+Masking is best effort: a secret under an ordinary key name with an ordinary-looking value, such as `SMTP_LOGIN=hunter2`, stays visible.
+
+The `Read(**/.env)` entry in `permissions.deny` stays: Claude Code checks it against the redirected path, so a bare `.env` is refused even if the hook fails or is not installed. Suffixed files such as `.env.local` have no entry, so that templates like `.env.example` stay readable, and only the hook guards them, as before this change. A path that resolves outside the `env-files` rule, for example through a symlink, is denied, as is any file that cannot be masked. Bash commands naming an env file stay denied and point the agent to Read. Codex has no equivalent redirect and keeps the deny.
 
 ### Recursive deletion
 

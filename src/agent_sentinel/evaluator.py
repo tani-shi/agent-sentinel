@@ -11,6 +11,7 @@ from __future__ import annotations
 from fnmatch import fnmatch
 from typing import Any
 
+from agent_sentinel import env_mask
 from agent_sentinel import rule_engine as rules
 from agent_sentinel.patch_paths import extract_paths
 
@@ -34,6 +35,11 @@ AUTO_ALLOW_TOOLS = {
 
 # File tools evaluated through sensitive path deny rules.
 FILE_TOOLS = {"Read", "Write", "Edit"}
+
+# A Read of an `env-files` path is allowed only as a redirect to a masked copy,
+# which the hook writes before answering (see env_mask).
+MASKED_READ_STAGE = "MASKED_READ"
+MASKED_READ_REASON = "Served a copy with secret values masked"
 
 # Tools whose `command` runs through the shell under the Bash rules.
 SHELL_TOOLS = {"Bash", "Monitor"}
@@ -60,6 +66,10 @@ def evaluate(hook_input: dict[str, Any]) -> tuple[str, str, str] | None:
         return _evaluate_bash(tool_input, hook_input)
     elif tool_name == "apply_patch":
         return _evaluate_patch(tool_input, hook_input)
+    elif tool_name == "Read" and env_mask.servable(
+        str(tool_input.get("file_path", "")), hook_input.get("cwd", ".")
+    ):
+        return "allow", MASKED_READ_REASON, MASKED_READ_STAGE
     elif tool_name in FILE_TOOLS:
         return _evaluate_file(tool_input)
     elif _matches(tool_name, AUTO_ALLOW_TOOLS):
