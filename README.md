@@ -245,3 +245,7 @@ src/agent_sentinel/
 ├── paths.py              # Path resolution and containment checks
 └── rules/
 ```
+
+## License
+
+[MIT](LICENSE)
