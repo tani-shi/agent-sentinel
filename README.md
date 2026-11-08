@@ -17,14 +17,12 @@ The hook is an additional guardrail, not a replacement for the host sandbox or p
 
 ## Installation
 
-Python 3.11 or later and `uv` are required. Install a [release](https://github.com/tani-shi/agent-sentinel/releases) tag:
+Python 3.11 or later and `uv` are required:
 
 ```bash
-uv tool install git+https://github.com/tani-shi/agent-sentinel@v2026.11.08
+uv tool install git+https://github.com/tani-shi/agent-sentinel
 agent-sentinel install --target claude   # or codex, all
 ```
-
-To upgrade, reinstall with a newer tag using `uv tool install --force`, then run `agent-sentinel install` again.
 
 The installer merges its entries into existing configuration, saves a `.bak` file beside each changed target, and removes entries that earlier versions wrote. On Claude Code it also writes `permissions.deny` entries for sensitive paths. Use `--path FILE` to override the host configuration path.
 
