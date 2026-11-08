@@ -1,10 +1,10 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 
 [[package]]
 name = "agent-sentinel"
-version = "2026.8.12.5"
+version = "2026.11.8"
 source = { editable = "." }
 
 [package.dev-dependencies]

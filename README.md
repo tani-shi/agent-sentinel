@@ -15,6 +15,44 @@ DEFER [RULE_DEFER]: Matched defer rule: terraform
 
 The hook is an additional guardrail, not a replacement for the host sandbox or permission system. It is designed for hosts whose deferred calls reach an automated reviewer.
 
+## Installation
+
+Python 3.11 or later and `uv` are required. Install a [release](https://github.com/tani-shi/agent-sentinel/releases) tag:
+
+```bash
+uv tool install git+https://github.com/tani-shi/agent-sentinel@v2026.11.08
+agent-sentinel install --target claude   # or codex, all
+```
+
+To upgrade, reinstall with a newer tag using `uv tool install --force`, then run `agent-sentinel install` again.
+
+The installer merges its entries into existing configuration, saves a `.bak` file beside each changed target, and removes entries that earlier versions wrote. On Claude Code it also writes `permissions.deny` entries for sensitive paths. Use `--path FILE` to override the host configuration path.
+
+The Claude Code hook lives in user settings, which cloud sessions do not read.
+
+Uninstalling removes agent-sentinel's hooks and its dedicated rules file while preserving other hooks and `default.rules`:
+
+```bash
+agent-sentinel uninstall --target claude   # or codex, all
+```
+
+### Codex setup
+
+Codex requires manual trust for user-added command hooks. After installation, start a new Codex task and trust the agent-sentinel hooks in Settings > Hooks (GUI) or `/hooks` (CLI). Trust is recorded per hook definition, so you need to trust the hooks again only after their definition changes.
+
+Recommended `config.toml`:
+
+```toml
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"   # or "user" to send deferred requests to a person
+```
+
+The installer does not rewrite `config.toml`, but warns about settings that weaken enforcement:
+
+- `features.hooks = false` (or the legacy `features.codex_hooks = false`): hook DENY decisions do not run.
+- `approval_policy = "never"`: deferred commands run without review.
+
 ## How it works
 
 | Capability | Claude Code | Codex |
@@ -62,61 +100,6 @@ sandbox
 - PermissionRequest covers Bash only. `apply_patch` approval requests remain with Codex.
 - Tools that bypass the local function-tool hook path, including Hosted WebSearch, are not inspected.
 
-## Installation
-
-Python 3.11 or later and `uv` are required. Clone the repository and install from its root:
-
-```bash
-git clone https://github.com/tani-shi/agent-sentinel.git
-cd agent-sentinel
-```
-
-```bash
-uv tool install .
-agent-sentinel install --target claude   # or codex, all
-```
-
-The installers merge their entries into existing configuration without replacing unrelated entries and save a `.bak` file beside each changed target. The Claude Code installer also writes `permissions.deny` entries for sensitive paths, and removes the `Read` / `Write` / `Edit` allow entries and the MCP `ask` entries that earlier versions wrote. Use `--path FILE` to override the host configuration path.
-
-The Claude Code hook lives in user settings, which cloud sessions do not read.
-
-Uninstalling removes agent-sentinel's hooks and its dedicated rules file while preserving other hooks and `default.rules`:
-
-```bash
-agent-sentinel uninstall --target claude   # or codex, all
-```
-
-## Codex setup
-
-### Trust the hooks
-
-Codex requires manual review and trust for user-added command hooks. After installation, start a new Codex task and trust the agent-sentinel hooks in one of these locations:
-
-- Codex GUI: Settings > Hooks
-- Codex CLI: `/hooks`
-
-A missing `/hooks` slash-command suggestion in the Codex GUI does not indicate a configuration problem. Trust is recorded per hook definition, so you need to trust the hook again only after its definition changes. The installer does not modify Codex's trust state.
-
-### Recommended configuration
-
-```toml
-sandbox_mode = "workspace-write"
-approval_policy = "on-request"
-approvals_reviewer = "auto_review"
-```
-
-Set `approvals_reviewer = "user"` to send deferred requests to a person instead.
-
-agent-sentinel does not rewrite `config.toml`, but the installer warns about settings that weaken enforcement:
-
-- `features.hooks = false`: Hook DENY decisions do not run. If the canonical key is absent, the legacy `features.codex_hooks = false` also triggers the warning.
-- `approval_policy = "never"`: Approval requests are disabled, so deferred commands run without auto-review.
-
-Official references:
-
-- Codex: [Configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference), [Rules](https://learn.chatgpt.com/docs/agent-configuration/rules), [Agent approvals & security](https://learn.chatgpt.com/docs/agent-approvals-security), [Auto-review](https://learn.chatgpt.com/docs/sandboxing/auto-review), [Hooks](https://learn.chatgpt.com/docs/hooks)
-- Claude Code: [Hooks reference](https://code.claude.com/docs/en/hooks), [Permissions guide](https://code.claude.com/docs/en/permissions), [Permission modes](https://code.claude.com/docs/en/permission-modes)
-
 ## Rules
 
 Both hosts share these rule files:
@@ -145,7 +128,12 @@ On Claude Code, a Read of an env file (the `env-files` rule: `.env`, `.env.local
 
 Masking is best effort: a secret under an ordinary key name with an ordinary-looking value, such as `SMTP_LOGIN=hunter2`, stays visible.
 
-The `Read(**/.env)` entry in `permissions.deny` stays: Claude Code checks it against the redirected path, so a bare `.env` is refused even if the hook fails or is not installed. Suffixed files such as `.env.local` have no entry, so that templates like `.env.example` stay readable, and only the hook guards them, as before this change. A path that resolves outside the `env-files` rule, for example through a symlink, is denied, as is any file that cannot be masked. Bash commands naming an env file stay denied and point the agent to Read. Codex has no equivalent redirect and keeps the deny.
+Around the redirect:
+
+- `.env` itself is also refused by the `Read(**/.env)` entry in `permissions.deny`, which Claude Code checks against the redirected path, so it stays protected even if the hook fails or is not installed.
+- Suffixed files such as `.env.local` are guarded by the hook alone, so that templates such as `.env.example` stay readable.
+- A path that resolves outside the `env-files` rule, for example through a symlink, is denied, as is any file that cannot be masked.
+- Bash commands naming an env file stay denied and point the agent to Read. Codex has no equivalent redirect and keeps the deny.
 
 ### Recursive deletion
 
@@ -182,7 +170,7 @@ agent-sentinel replay [--since 30d | --event EVENT_ID] [--json]
 ```
 
 - `audit` detects inconsistencies between logged DENY verdicts and hook results, evaluation exceptions, installed Codex policy drift, and differences from the current evaluator. It cannot determine whether the host executed a tool or displayed an approval UI.
-- `replay` re-evaluates stored inputs with the current evaluator without executing anything. Events an earlier version decided with its LLM judge are reported as incomparable.
+- `replay` re-evaluates stored inputs with the current evaluator without executing anything.
 
 ### Annotate decisions
 
@@ -198,53 +186,17 @@ agent-sentinel log annotate EVENT_ID --label expected-prompt
 
 Logs are stored in `~/.local/share/agent-sentinel/logs/` on Unix and `%LOCALAPPDATA%\agent-sentinel\logs\` on Windows. Override the location with `AGENT_SENTINEL_LOG_DIR`. On Unix, directories use mode `0700` and files use mode `0600`.
 
-Schema v3 logs retain readable Bash commands, target paths, working directories, session IDs, and decision reasons so decisions can be reproduced. They do not retain Write or Edit bodies, `apply_patch` bodies, or complete unknown tool inputs. Treat logs like ordinary work data when sharing or backing them up.
-
-Each evaluation event records:
-
-- A unique `event_id` and an input SHA-256 hash for matching identical inputs
-- The raw and normalized command, every compound-command segment, and normalization steps
-- Matched rules
-- Hashes of the package, rules, and hook definitions. Hook definitions and Codex execution rules are hashed both as expected and as read from the installation target; `*_matches` fields report drift.
-- `host`: `claude` or `codex`
-- `owner`: `hook` when the hook decided, or `native` when it deferred to the host
-- `decision`: `allow`, `deny`, or `defer`; Codex PreToolUse records only `deny` or `defer`
-
-Hooks cannot observe whether the host honored a response or ran the tool, so `observed_outcome` is always `unknown` and `expected_action` is a policy expectation.
+Logs keep Bash commands, target paths, working directories, and session IDs verbatim so decisions can be replayed. They do not keep Write, Edit, or `apply_patch` bodies. Treat them as work data when sharing or backing them up.
 
 ## Development
 
 ```bash
 make install
-make check   # lint, fmt-check, typecheck, test
+make check          # lint, fmt-check, typecheck, test
+make update-rules   # start the Claude Code /update-rules workflow
 ```
 
-Maintain rules with `make update-rules`, which starts the Claude Code `/update-rules` workflow.
-
-Unit tests cover local policy classification, installation file changes, and logs. They do not establish how Codex or Claude Code handles an approval request, a hook response, or a generated rule; verify those in the host application.
-
-[`.codex/rules/codex-readonly.rules`](.codex/rules/codex-readonly.rules) lets Codex CLI run review, rule validation, diagnostics, and configuration listing without approval when this repository is opened as a trusted project. It does not match configuration or authentication changes, or plugin and MCP additions or removals.
-
-```text
-src/agent_sentinel/
-├── cli.py                # CLI entry point and hook runner
-├── evaluator.py          # Decision pipeline
-├── rule_engine.py        # Static rule matching
-├── command_normalizer.py # Prefix-option and wrapper stripping for rule matching
-├── deletion_scope.py     # Recursive-deletion classification
-├── patch_paths.py        # apply_patch target extraction
-├── hook_io.py            # Claude Code hook protocol
-├── codex_io.py           # Codex hook protocol
-├── codex_policy.py       # Codex forbidden execution rules
-├── installer.py          # Claude Code installer
-├── codex_installer.py    # Codex installer
-├── logger.py             # Log writing
-├── log_event.py          # Log event schema
-├── log_analysis.py       # audit and replay
-├── policy_snapshot.py    # Package, rule, and hook hashes
-├── paths.py              # Path resolution and containment checks
-└── rules/
-```
+Unit tests cover local classification, installation file changes, and logs. They do not establish how Codex or Claude Code handles a hook response or a generated rule; verify those in the host application.
 
 ## License
 

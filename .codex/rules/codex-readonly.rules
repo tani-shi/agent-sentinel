@@ -1,3 +1,5 @@
+# Lets Codex CLI run read-only commands without approval when this repository is a trusted project.
+# Configuration, authentication, plugin, and MCP changes are intentionally absent.
 prefix_rule(pattern=["codex", "review"], decision="allow")
 prefix_rule(pattern=["codex", "execpolicy", "check"], decision="allow")
 prefix_rule(pattern=["codex", "features", "list"], decision="allow")
