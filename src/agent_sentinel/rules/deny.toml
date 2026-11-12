@@ -168,16 +168,12 @@ reason = "Broadcast/pattern kills terminate unintended processes. Target a speci
 
 # --- Environment / Config Files ---
 
-# The negative lookahead exempts the committed-template suffixes
-# (`.env.example`/`.sample`/`.template`/`.dist`), like private-key-files exempts
-# `.pub.pem`. The glob is only `**/.env`: globs cannot express the lookahead, and
-# keeping the `**/.env.*` catch-all would re-block the very templates it cannot
-# exempt. Tradeoff: suffixed secret env files (`.env.production` …) then lose the
-# settings.json glob deny on hook-less sub-agent/background paths, relying on
-# this path_regex alone.
+# Template suffixes are exempt even with code glued on (`edit('x/.env.example',[`).
+# Globs cannot exempt them, so suffixed secrets (`.env.local`) rely on this regex
+# alone where no hook runs.
 [[sensitive_path_rules]]
 name = "env-files"
-path_regex = '''(^|/)\.env(\.(?!(?:@env_template_suffixes@)$).+)?$'''
+path_regex = '''(^|/)\.env(\.(?!(?:@env_template_suffixes@)(?:$|[^\w.-])).+)?$'''
 path_glob = ["**/.env"]
 
 [[sensitive_path_rules]]
