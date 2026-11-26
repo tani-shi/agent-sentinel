@@ -20,6 +20,9 @@ class Rule:
     pattern: re.Pattern[str]
     path_globs: tuple[str, ...] = ()
     reason: str | None = None
+    # Match only text the shell expands: not single-quoted words or the body
+    # of a heredoc with a quoted delimiter. Deny rules only.
+    live_text_only: bool = False
 
 
 @dataclass
@@ -53,6 +56,7 @@ def _parse_rules(data: dict[str, Any], *, kind: str) -> RuleSet:
                 name=entry["name"],
                 pattern=re.compile(_expand_fragments(entry["command_regex"], fragments), flags),
                 reason=entry.get("reason"),
+                live_text_only=entry.get("live_text_only", False),
             )
         )
     for entry in data.get("sensitive_path_rules", []):
@@ -119,15 +123,22 @@ def get_defer_rules() -> RuleSet:
     return _defer_rules
 
 
-def _match_command_rules(rules: list[Rule], command: str) -> Rule | None:
+def _match_command_rules(rules: list[Rule], command: str, live: str | None = None) -> Rule | None:
     """Match a command against rules, trying the original form first and
     then a prefix-option-stripped form (so ``git -c http.proxy= push
     --force origin main`` still hits the ``force-push-main`` deny rule).
     The OR combination keeps matching safe: if either form matches, the
     rule applies.
+
+    ``live`` is the command with its literal text blanked; a ``live_text_only``
+    rule matches it instead of the command.
     """
     normalized = normalize_for_matching(command)
     for rule in rules:
+        if rule.live_text_only and live is not None:
+            if rule.pattern.search(live):
+                return rule
+            continue
         if rule.pattern.search(command):
             return rule
         if normalized != command and rule.pattern.search(normalized):
@@ -135,9 +146,9 @@ def _match_command_rules(rules: list[Rule], command: str) -> Rule | None:
     return None
 
 
-def match_deny(command: str) -> Rule | None:
+def match_deny(command: str, live: str | None = None) -> Rule | None:
     """Check if command matches any deny rule."""
-    return _match_command_rules(get_deny_rules().command_rules, command)
+    return _match_command_rules(get_deny_rules().command_rules, command, live)
 
 
 def match_allow(command: str) -> Rule | None:
@@ -417,9 +428,10 @@ def _skip_brace(s: str, i: int, end: int, inner_subs: list[tuple[int, int]] | No
     return j
 
 
-def _parse_heredoc_delim(s: str, i: int, end: int) -> tuple[str, bool, int]:
+def _parse_heredoc_delim(s: str, i: int, end: int) -> tuple[str, bool, bool, int]:
     """``i`` points at the first ``<`` of ``<<``. Returns ``(delimiter,
-    tab_strip, position_past_delimiter_token)``.
+    tab_strip, quoted, position_past_delimiter_token)``. The shell expands the
+    body only when the delimiter is unquoted.
 
     Recognizes ``<<DELIM``, ``<<-DELIM`` (tab-stripping form), and quoted
     delimiters ``<<'DELIM'`` / ``<<"DELIM"``.
@@ -434,7 +446,8 @@ def _parse_heredoc_delim(s: str, i: int, end: int) -> tuple[str, bool, int]:
     if j >= end:
         raise _ParseError("heredoc missing delimiter")
 
-    if s[j] in ("'", '"'):
+    quoted = s[j] in ("'", '"')
+    if quoted:
         quote = s[j]
         j += 1
         delim_start = j
@@ -455,7 +468,7 @@ def _parse_heredoc_delim(s: str, i: int, end: int) -> tuple[str, bool, int]:
 
     if not delim:
         raise _ParseError("empty heredoc delimiter")
-    return delim, tab_strip, j
+    return delim, tab_strip, quoted, j
 
 
 def _skip_heredoc_body(s: str, i: int, end: int, delim: str, tab_strip: bool) -> int:
@@ -480,16 +493,23 @@ def _skip_heredoc_body(s: str, i: int, end: int, delim: str, tab_strip: bool) ->
     raise _ParseError(f"heredoc {delim!r} not closed")
 
 
-def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int]]) -> None:
+def _split_range(
+    s: str,
+    start: int,
+    end: int,
+    all_segments: list[tuple[int, int]],
+    literal_spans: list[tuple[int, int]],
+) -> None:
     """Walk ``s[start:end]`` splitting on top-level command operators and
     appending each command's ``(start, end)`` span to ``all_segments``.
     Substitutions encountered are recursively processed so their inner
-    commands are also collected.
+    commands are also collected. Spans the shell does not expand are appended
+    to ``literal_spans``.
     """
     inner_subs: list[tuple[int, int]] = []
     # Heredoc bodies follow the next newline after their ``<<DELIM`` marker,
     # so we queue declarations here and drain them when ``\n`` is reached.
-    pending_heredocs: list[tuple[str, bool]] = []
+    pending_heredocs: list[tuple[str, bool, bool]] = []
     i = start
     cmd_start = _skip_ws(s, start, end)
 
@@ -505,7 +525,9 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
 
         # --- Quoting ---
         if c == "'":
-            i = _skip_single_quote(s, i, end)
+            closed = _skip_single_quote(s, i, end)
+            literal_spans.append((i + 1, closed - 1))
+            i = closed
             continue
         if c == '"':
             i = _skip_double_quote(s, i, end, inner_subs)
@@ -559,8 +581,8 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
                 # ``<<<`` here-string: the value is a normal token, skip the op.
                 i += 3
                 continue
-            delim, tab_strip, i = _parse_heredoc_delim(s, i, end)
-            pending_heredocs.append((delim, tab_strip))
+            delim, tab_strip, quoted, i = _parse_heredoc_delim(s, i, end)
+            pending_heredocs.append((delim, tab_strip, quoted))
             continue
 
         # --- Process substitution <(...) and >(...) ---
@@ -631,8 +653,11 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
                 # segment so MULTILINE deny rules still see body content.
                 i += 1
                 while pending_heredocs:
-                    delim, tab_strip = pending_heredocs.pop(0)
+                    delim, tab_strip, quoted = pending_heredocs.pop(0)
+                    body_start = i
                     i = _skip_heredoc_body(s, i, end, delim, tab_strip)
+                    if quoted:
+                        literal_spans.append((body_start, i))
                 emit(i)
                 cmd_start = _skip_ws(s, i, end)
                 continue
@@ -652,7 +677,7 @@ def _split_range(s: str, start: int, end: int, all_segments: list[tuple[int, int
     # Each recursive call will discover its own nested substitutions.
     for a, b in inner_subs:
         if a < b:
-            _split_range(s, a, b, all_segments)
+            _split_range(s, a, b, all_segments, literal_spans)
 
 
 # Constructs that run a STRING argument as an inline script. The char splitter
@@ -714,31 +739,49 @@ def extract_commands(command: str) -> list[str] | None:
     and redirections are preserved exactly as written, which is what the
     existing per-command regex rules expect.
     """
+    segments = _extract_segments(command)
+    return None if segments is None else [segment.text for segment in segments]
+
+
+class _Segment(NamedTuple):
+    """A command, and the same text with its literal spans blanked."""
+
+    text: str
+    live: str
+
+
+def _extract_segments(command: str) -> list[_Segment] | None:
     if not command.strip():
         return []
     try:
         spans: list[tuple[int, int]] = []
-        _split_range(command, 0, len(command), spans)
+        literal_spans: list[tuple[int, int]] = []
+        _split_range(command, 0, len(command), spans, literal_spans)
     except _ParseError:
         return None
 
+    chars = list(command)
+    for a, b in literal_spans:
+        chars[a:b] = [c if c == "\n" else " " for c in chars[a:b]]
+    live = "".join(chars)
+
     seen: set[tuple[int, int]] = set()
-    out: list[str] = []
+    out: list[_Segment] = []
     for a, b in spans:
         if (a, b) in seen:
             continue
         seen.add((a, b))
-        out.append(command[a:b])
+        out.append(_Segment(command[a:b], live[a:b]))
 
     # Recurse into `bash -c <script>` / `eval <script>` inline scripts so their
     # commands face the same rules. If an inner script is itself unparseable, we
     # must not let the opaque wrapper segment be auto-allowed — treat the whole
     # command as unparseable so it goes through the deny prefilter and defers.
     for segment in list(out):
-        script = _extract_inline_script(segment)
+        script = _extract_inline_script(segment.text)
         if script is None:
             continue
-        inner = extract_commands(script)
+        inner = _extract_segments(script)
         if inner is None:
             return None
         out.extend(inner)
@@ -779,11 +822,13 @@ class BashInspection(NamedTuple):
     segments: tuple[BashSegmentInspection, ...]
 
 
-def _match_deny_forms(segment: str, cwd: str) -> Rule | None:
-    return match_deny(segment) or match_secret_operand(segment, cwd)
+def _match_deny_forms(segment: str, cwd: str, live: str) -> Rule | None:
+    return match_deny(segment, live) or match_secret_operand(segment, cwd)
 
 
-def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) -> SegmentVerdict:
+def _evaluate_segment(
+    segment: str, cwd: str, assignments: Mapping[str, str], live: str
+) -> SegmentVerdict:
     """Evaluate a single segment through DENY -> deletion scope -> DEFER -> ALLOW.
 
     ``decision`` is one of 'deny', 'defer', 'allow', 'unmatched'.
@@ -792,7 +837,7 @@ def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) ->
     root is allowed and one aimed at ``/``, the home directory or a temp root is
     denied.
     """
-    deny = _match_deny_forms(segment, cwd)
+    deny = _match_deny_forms(segment, cwd, live)
     if deny:
         return SegmentVerdict("deny", deny.name, deny.reason)
     scope = deletion_scope.classify(segment, cwd, assignments)
@@ -810,7 +855,7 @@ def _evaluate_segment(segment: str, cwd: str, assignments: Mapping[str, str]) ->
 
 
 def _evaluate_unparseable_segment(command: str, cwd: str) -> SegmentVerdict:
-    deny = _match_deny_forms(command, cwd)
+    deny = _match_deny_forms(command, cwd, command)
     if deny:
         return SegmentVerdict("deny", deny.name, deny.reason)
     defer = match_defer(command)
@@ -823,19 +868,16 @@ def inspect_bash_command(command: str, cwd: str | None = None) -> BashInspection
     """Inspect the exact segments and rule verdicts used for evaluation."""
     if cwd is None:
         cwd = os.getcwd()
-    segments = extract_commands(command)
-    if segments is None:
-        segments = [command]
-        parsed = False
-    else:
-        parsed = True
+    extracted = _extract_segments(command)
+    parsed = extracted is not None
+    segments = extracted if extracted is not None else [_Segment(command, command)]
 
     inspections: list[BashSegmentInspection] = []
     assignments = deletion_scope.Assignments()
-    for segment in segments:
+    for segment, live in segments:
         assignments.record(segment)
         verdict = (
-            _evaluate_segment(segment, cwd, assignments)
+            _evaluate_segment(segment, cwd, assignments, live)
             if parsed
             else _evaluate_unparseable_segment(segment, cwd)
         )

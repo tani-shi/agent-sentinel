@@ -56,6 +56,40 @@ class TestDenyRules:
         assert match_deny("while read line") is not None
         assert match_deny("while [ $x -lt 5 ]") is not None
 
+    def test_zsh_expansion_flags_denied(self):
+        for cmd in (
+            "for p in ${(f)x}; do echo $p; done",
+            'for p in ${(f)"$(gcloud container clusters list)"}; do echo $p; done',
+            "echo ${(j:,:)arr}",
+            "echo ${(k)#arr}",
+            "echo ${(f)~x}",
+            "echo ${(f)'a b'}",
+            'echo "lines: ${(f)x}"',
+            "cat <<EOF\n${(f)x}\nEOF",
+            "x=$'a\\nb'; echo ${(f)x}",
+        ):
+            decision, reason = evaluate_command(cmd)
+            assert decision == "deny", cmd
+            assert "zsh-expansion-flags" in reason
+
+    def test_zsh_expansion_flags_in_literal_text_not_denied(self):
+        for cmd in (
+            "git commit -m 'deny zsh ${(f)x} flags'",
+            "grep -rn '${(f)x' src",
+            "cat <<'EOF' > a.zsh\nfor p in ${(f)x}; do echo $p; done\nEOF",
+            "git commit -m \"$(cat <<'EOF'\ndeny ${(f)var} forms\nEOF\n)\"",
+        ):
+            assert evaluate_command(cmd)[0] != "deny", cmd
+
+    def test_zsh_expansion_flags_skip_javascript_template_literals(self):
+        script = "console.log(`${(Date.now() - t) / 1000} ${(n/s).toFixed(0)} ${(a)+b} ${(a)}`)"
+        assert evaluate_command(f"cat > a.js <<EOF\n{script}\nEOF")[0] != "deny"
+        assert evaluate_command(f'node -e "{script}"')[0] != "deny"
+
+    def test_literal_text_still_reaches_other_deny_rules(self):
+        assert evaluate_command("bash -c 'sudo id'")[0] == "deny"
+        assert evaluate_command("cat <<'EOF' | bash\nsudo id\nEOF")[0] == "deny"
+
     def test_until_loop_denied(self):
         assert match_deny("until false") is not None
         assert match_deny("until ! pgrep -f foo") is not None
