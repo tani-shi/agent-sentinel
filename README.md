@@ -73,6 +73,7 @@ RULE_DENY → deletion scope → RULE_DEFER → RULE_ALLOW → otherwise DEFER
 
 - A hook `allow` skips the permission prompt, which in auto mode includes the classifier review. Allow rules are therefore limited to commands that do not run arbitrary code; interpreters, package scripts, `make`, and test runners defer.
 - Deferred calls produce no hook output and go through Claude Code's permission flow: the classifier in auto mode, a prompt in `default` mode, and a denial where no prompt can be shown, such as `dontAsk` mode.
+- Commands using zsh parameter expansion flags such as `${(f)...}` are denied with a portable rewrite. Claude Code cannot parse them and stops the whole command for manual approval, which neither the classifier nor a hook `allow` can give.
 - File tools defer outside sensitive paths: Claude Code approves working-directory reads and edits itself, and an allow would also approve writes outside them and to its protected paths.
 
 ### Codex

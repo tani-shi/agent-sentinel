@@ -60,6 +60,13 @@ name = "watch"
 command_regex = '''\A\s*watch(\s|$)'''
 reason = "Don't poll with a shell loop. To wait for a subagent, await its completion notification (delivered automatically) or launch it with run_in_background:false. To wait for an external process (server ready, CI, a file appearing), start it with run_in_background:true and let it exit, or run a single one-shot check — not an in-shell loop."
 
+# The trailing class keeps JavaScript template literals (`${(n / s).toFixed(0)}`) out.
+[[rules]]
+name = "zsh-expansion-flags"
+command_regex = '''\$\{\([^()\n]*\)[\w"'$@:#~]'''
+live_text_only = true
+reason = "zsh parameter expansion flags are not portable, and Claude Code stops a command that uses them for manual approval. Iterate lines with `for x in $(cmd); do ...; done` when each line is one word, or `cmd | xargs -L1 ...` otherwise, instead of ${(f)...}, and use portable expansions for the other flags."
+
 [[rules]]
 name = "mkfs"
 command_regex = '''mkfs(\.\w+)?\s+'''
