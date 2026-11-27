@@ -6,6 +6,9 @@
 # `.env` suffixes that are committed placeholder templates, not real secrets, so
 # writes to them are safe to allow.
 env_template_suffixes = "example|sample|template|dist"
+# `gcloud` and an optional release track. Defined under the same name in
+# allow.toml and deny.toml so both place the verb after the same prefix.
+gcloud_track = '''gcloud(\s+(alpha|beta|preview))?+'''
 
 # --- Command Deny Rules ---
 
@@ -139,6 +142,27 @@ reason = "Prints AWS credentials to stdout, landing them in the conversation con
 name = "aws-ssm-decrypt"
 command_regex = '''aws\s+ssm\s+get-parameters?(-by-path)?(?=\s)(?=.*\s--with-decryption(\s|$))'''
 reason = "Decrypts a SecureString parameter to stdout. Read the parameter without --with-decryption to confirm it exists, or have the user run the command themselves."
+
+# --- Cloud CLI Writes ---
+
+# The verb lists are deliberately incomplete: a write they miss defers to the
+# host reviewer. \A keeps a heredoc line that merely names a command from
+# matching. Local-only groups (config, auth, …), read queries, and the `help`
+# subcommand are left out.
+[[rules]]
+name = "aws-mutate"
+command_regex = '''\A\s*aws\s+(?!configure\s)(?!(\S+\s+){0,2}help(\s|$))(s3\s+(cp|mv|rm|sync|mb|rb|website)|\S+\s+(?!(start|stop)-query)(create|delete|put|update|modify|set|add|attach|detach|associate|disassociate|run|start|stop|terminate|reboot|register|deregister|enable|disable|authorize|revoke|tag|untag|copy|restore|import|publish|send|invoke|execute|apply|cancel|accept|reject|replace|reset|purchase|request|release|allocate|deploy|upload|move|abort|rotate|resize|upgrade|downgrade|activate|deactivate|promote|retry|provision|initiate|submit|schedule|complete)(-\w+)*)(\s|$)'''
+reason = "Cloud CLI writes are run by the user, not the agent. Show the exact command and ask the user to run it themselves (in Claude Code: `! <command>`)."
+
+# The verb must sit in the run of bare words after `gcloud`, so a flag value or
+# quoted filter that contains a verb does not match. The run stops at a read
+# verb: what follows it is a resource name (`describe update-inventory`).
+# `--help` is not exempted: a comment, quoted value, or remote command can carry
+# it, and the allow rule `help-flag` would then approve the write.
+[[rules]]
+name = "gcloud-mutate"
+command_regex = '''\A\s*@gcloud_track@\s+(?!(config|auth|components|emulators|help)\s)(storage\s+(rm|cp|mv|rsync)|((?!(list|describe|read|tail|search|lookup|wait|(list|describe|get)-[\w-]+)\s)[a-z][\w-]*\s+)+?((create|delete|update|set|add|remove)(-[\w-]+)?|deploy|submit|run|import|export|enable|disable|reset|start|stop|resize|move|restore|cancel|approve|deny|revoke|bind|unbind|attach|detach|push|promote|rollback|abort|suspend|resume|patch|destroy|publish|ssh|scp))(\s|$)'''
+reason = "Cloud CLI writes are run by the user, not the agent. Show the exact command and ask the user to run it themselves (in Claude Code: `! <command>`)."
 
 # --- Process Signals (broadcast / pattern-match) ---
 

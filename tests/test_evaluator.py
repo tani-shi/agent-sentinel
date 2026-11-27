@@ -90,8 +90,8 @@ class TestBashEvaluation:
         "command",
         [
             "aws ec2 describe-instances --region us-east-1",
-            # Read commands the earlier deny-by-default `aws-mutate` rule
-            # prompted for, taken verbatim from the evaluation log.
+            # Read commands an earlier, broader `aws-mutate` rule caught,
+            # taken verbatim from the evaluation log.
             "aws --version",
             "aws login help 2>&1 | head -40",
             "aws logs filter-log-events --region ap-northeast-1 --log-group-name /aws/lambda/x",
@@ -118,16 +118,16 @@ class TestBashEvaluation:
         assert decision == "deny"
         assert stage == "RULE_DENY"
 
-    def test_aws_mutate_defers(self):
-        """AWS mutate commands are caught by a defer rule."""
+    def test_aws_mutate_denied(self):
+        """AWS mutate commands are handed to the user by a deny rule."""
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "aws s3 cp file s3://bucket"},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "defer"
-        assert stage == "RULE_DEFER"
+        assert decision == "deny"
+        assert stage == "RULE_DENY"
 
 
 class TestApplyPatchEvaluation:
@@ -556,15 +556,15 @@ class TestExternalImpactCommands:
         assert decision == "defer"
         assert stage == "RULE_DEFER"
 
-    def test_aws_cp_defers(self):
+    def test_aws_cp_denied(self):
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "aws s3 cp file s3://bucket"},
             "cwd": "/tmp",
         }
         decision, reason, stage = evaluate(hook_input)
-        assert decision == "defer"
-        assert stage == "RULE_DEFER"
+        assert decision == "deny"
+        assert stage == "RULE_DENY"
 
     def test_gh_pr_create_defers(self):
         hook_input = {

@@ -8,6 +8,10 @@
 # wrapped command is the head.
 not_wrapper = '''(?!(env|timeout|nice|ionice|stdbuf|xargs|command|exec|builtin|time|nohup|if|elif|do|then|else|!)(\s|$))'''
 
+# `gcloud` and an optional release track. Defined under the same name in
+# allow.toml and deny.toml so both place the verb after the same prefix.
+gcloud_track = '''gcloud(\s+(alpha|beta|preview))?+'''
+
 # --- Shell Builtins & Navigation ---
 
 [[rules]]
@@ -325,17 +329,19 @@ command_regex = '''^\s*gh\s+browse(\s|$)'''
 name = "gcloud-info"
 command_regex = '''^\s*gcloud\s+(version|info|help|cheat-sheet|feedback|survey)(\s|$)'''
 
+# The verb must follow the run of bare words after `gcloud`: matched anywhere,
+# it would approve a write whose flag value or positional happens to be `list`.
 [[rules]]
 name = "gcloud-read"
-command_regex = '''^\s*gcloud\s+.*\s+(list|describe|get-iam-policy|search|lookup|diagnose|metrics|wait|validate|notices|read|tail)(\s|$)'''
+command_regex = '''^\s*@gcloud_track@(\s+[a-z][\w-]*)+?\s+(list|describe|get-iam-policy|search|lookup|diagnose|metrics|wait|validate|notices|read|tail)(\s|$)'''
 
 [[rules]]
 name = "gcloud-read-compound"
-command_regex = '''^\s*gcloud\s+.*\s+(list-\w+|describe-\w+|fetch-\w+|query-\w+|check-\w+|show-\w+|pre-check-\w+|install-status|is-upgradeable)(\s|$)'''
+command_regex = '''^\s*@gcloud_track@(\s+[a-z][\w-]*)+?\s+(list-\w+|describe-\w+|fetch-\w+|query-\w+|check-\w+|show-\w+|pre-check-\w+|install-status|is-upgradeable)(\s|$)'''
 
 [[rules]]
 name = "gcloud-get-safe"
-command_regex = '''^\s*gcloud\s+.*\s+get-(?!credentials)([\w-]+)(\s|$)'''
+command_regex = '''^\s*@gcloud_track@(\s+[a-z][\w-]*)+?\s+get-(?![\w-]*(credential|token|password|secret|auth|key-string))[\w-]+(\s|$)'''
 
 [[rules]]
 name = "gcloud-config-read"
@@ -343,7 +349,7 @@ command_regex = '''^\s*gcloud\s+(config\s+(list|get|configurations\s+(list|descr
 
 [[rules]]
 name = "gcloud-detect-analyze"
-command_regex = '''^\s*gcloud\s+.*\s+(detect-\w+|analyze-\w+|classify-text|recognize|recognize-long-running|explain|predict|raw-predict|direct-predict|direct-raw-predict)(\s|$)'''
+command_regex = '''^\s*@gcloud_track@(\s+[a-z][\w-]*)+?\s+(detect-\w+|analyze-\w+|classify-text|recognize|recognize-long-running|explain|predict|raw-predict|direct-predict|direct-raw-predict)(\s|$)'''
 
 # --- Firebase ---
 
@@ -353,9 +359,12 @@ command_regex = '''^\s*firebase\s+(emulators:start|serve|init|functions:log|fire
 
 # --- AWS ---
 
+# Operations whose name marks them as printing a credential, `s3api get-object`
+# (writes a local file), and decryption are left to the host reviewer: an allow
+# here would skip it.
 [[rules]]
 name = "aws-read"
-command_regex = '''^\s*aws\s+\S+\s+(list|describe|get|show|wait|head|filter|tail|search|scan|query|lookup|count|check|validate|estimate|preview)(-\w+)*(\s|$)'''
+command_regex = '''^\s*aws\s+(?!(?s:.*)\s--with-d)\S+\s+(?!\S*(token|credential|password|api-key|access-details))(?!get-object(\s|$))(list|describe|get|show|wait|head|filter|tail|search|scan|query|lookup|count|check|validate|estimate|preview)(-\w+)*(\s|$)'''
 
 [[rules]]
 name = "aws-help"
