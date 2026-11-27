@@ -333,6 +333,41 @@ class TestDenyRules:
         assert match_deny("aws secretsmanager list-secrets") is None
         assert match_deny("aws configure list") is None
 
+    # --- Cloud CLI writes ---
+    def test_gcloud_mutate(self):
+        assert match_deny("gcloud compute instances create test") is not None
+        assert match_deny("gcloud app deploy") is not None
+        assert match_deny("gcloud run deploy") is not None
+
+    def test_aws_mutate(self):
+        assert match_deny("aws ec2 run-instances") is not None
+        assert match_deny("aws ec2 create-snapshot --volume-id vol-1") is not None
+        assert match_deny("aws iam delete-user --user-name u") is not None
+        assert match_deny("aws dynamodb put-item --table-name t") is not None
+        assert match_deny("aws lambda invoke --function-name f out.json") is not None
+        assert match_deny("aws ecs execute-command --command sh") is not None
+
+    def test_aws_ssm_remote_execution(self):
+        assert match_deny("aws ssm send-command --document-name AWS-RunShellScript") is not None
+        assert match_deny("aws ssm start-session --target i-1") is not None
+
+    def test_aws_s3_mutate(self):
+        assert match_deny("aws s3 cp file s3://bucket") is not None
+        assert match_deny("aws s3 sync . s3://bucket") is not None
+        assert match_deny("aws s3 rm s3://bucket/key") is not None
+        assert match_deny("aws s3 mb s3://bucket") is not None
+
+    def test_aws_mutate_excludes_read(self):
+        assert match_deny("aws s3 list-buckets") is None
+        assert match_deny("aws ec2 describe-instances --region us-east-1") is None
+        assert match_deny("aws sts get-caller-identity") is None
+        assert match_deny("aws s3api list-objects") is None
+        assert match_deny("aws s3api wait object-exists") is None
+        assert match_deny("aws s3 ls s3://bucket") is None
+        assert match_deny("aws logs filter-log-events --log-group-name /x") is None
+        assert match_deny("aws ec2 help") is None
+        assert match_deny("aws --version") is None
+
 
 class TestAllowRules:
     def test_ls(self):
@@ -1328,45 +1363,8 @@ class TestDeferRules:
         assert match_defer("curl -K extra.cfg -X POST http://localhost:3000/x") is not None
         assert match_defer("curl --config extra.cfg -X POST http://localhost:3000/x") is not None
 
-    # --- gcloud mutation ---
-    def test_gcloud_mutate(self):
-        assert match_defer("gcloud compute instances create test") is not None
-        assert match_defer("gcloud app deploy") is not None
-        assert match_defer("gcloud run deploy") is not None
-
     def test_gcloud_pubsub_pull(self):
         assert match_defer("gcloud pubsub subscriptions pull my-sub --limit 5") is not None
-
-    # --- AWS mutation ---
-    def test_aws_mutate(self):
-        assert match_defer("aws ec2 run-instances") is not None
-        assert match_defer("aws ec2 create-snapshot --volume-id vol-1") is not None
-        assert match_defer("aws iam delete-user --user-name u") is not None
-        assert match_defer("aws dynamodb put-item --table-name t") is not None
-        assert match_defer("aws lambda invoke --function-name f out.json") is not None
-        assert match_defer("aws ecs execute-command --command sh") is not None
-        assert match_defer("aws configure set region us-east-1") is not None
-
-    def test_aws_ssm_remote_execution(self):
-        assert match_defer("aws ssm send-command --document-name AWS-RunShellScript") is not None
-        assert match_defer("aws ssm start-session --target i-1") is not None
-
-    def test_aws_s3_mutate(self):
-        assert match_defer("aws s3 cp file s3://bucket") is not None
-        assert match_defer("aws s3 sync . s3://bucket") is not None
-        assert match_defer("aws s3 rm s3://bucket/key") is not None
-        assert match_defer("aws s3 mb s3://bucket") is not None
-
-    def test_aws_mutate_excludes_read(self):
-        assert match_defer("aws s3 list-buckets") is None
-        assert match_defer("aws ec2 describe-instances --region us-east-1") is None
-        assert match_defer("aws sts get-caller-identity") is None
-        assert match_defer("aws s3api list-objects") is None
-        assert match_defer("aws s3api wait object-exists") is None
-        assert match_defer("aws s3 ls s3://bucket") is None
-        assert match_defer("aws logs filter-log-events --log-group-name /x") is None
-        assert match_defer("aws ec2 help") is None
-        assert match_defer("aws --version") is None
 
     # --- Make with external-impact targets ---
     def test_make_publish_release(self):

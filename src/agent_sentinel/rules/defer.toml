@@ -202,25 +202,11 @@ command_regex = '''^\s*(curl|wget)\s+(?!@loopback_only@).*(-X|--request)\s+(POST
 name = "curl-data"
 command_regex = '''^\s*curl\s+(?!@loopback_only@).*(-d\s|--data\s|--data-raw\s|--data-binary\s|--data-urlencode\s)'''
 
-# --- Google Cloud Mutations ---
-
-[[rules]]
-name = "gcloud-mutate"
-command_regex = '''^\s*gcloud\s+.*\s+(create|delete|update|set|add|remove|deploy|submit|run|import|export|enable|disable|reset|start|stop|resize|move|restore|cancel|approve|deny|revoke|bind|unbind|attach|detach|push|promote|rollback|abort|suspend|resume)(\s|$)'''
+# --- Google Cloud ---
 
 [[rules]]
 name = "gcloud-pubsub-pull"
 command_regex = '''^\s*gcloud\s+pubsub\s+subscriptions\s+pull(\s|$)'''
-
-# --- AWS Mutations ---
-
-[[rules]]
-name = "aws-mutate"
-command_regex = '''^\s*aws\s+\S+\s+(create|delete|put|update|modify|set|add|attach|detach|associate|disassociate|run|start|stop|terminate|reboot|register|deregister|enable|disable|authorize|revoke|tag|untag|copy|restore|import|publish|send|invoke|execute|apply|cancel|accept|reject|replace|reset|purchase|request|release|allocate|deploy|upload|move|abort|rotate|resize|upgrade|downgrade|activate|deactivate|promote|retry|provision|initiate|submit|schedule|complete)(-\w+)*(\s|$)'''
-
-[[rules]]
-name = "aws-s3-mutate"
-command_regex = '''^\s*aws\s+s3\s+(cp|mv|rm|sync|mb|rb|website)(\s|$)'''
 
 # --- Firebase Mutations ---
 

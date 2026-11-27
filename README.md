@@ -134,6 +134,10 @@ Around the redirect:
 - A path that resolves outside the `env-files` rule, for example through a symlink, is denied, as is any file that cannot be masked.
 - Bash commands naming an env file stay denied and point the agent to Read. Codex has no equivalent redirect and keeps the deny.
 
+### Cloud CLI writes
+
+`aws` and `gcloud` commands whose verb creates, changes, or deletes a resource are denied with a message telling the agent to hand the exact command to the user. The verb lists cover common writes only; a write they miss, and any `gsutil` or `bq` command, defers to the host reviewer. Reads are allowed. Those whose operation name marks them as printing a credential, decrypting a value, or writing a local file defer instead; the filter goes by name and is not exhaustive.
+
 ### Recursive deletion
 
 | Target | Decision |
